@@ -5,6 +5,26 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.2.2 - 2026-07-14 - Reported as "the tan borough outline fill doesn't align with its own
+    outline stroke" — turned out to be a much bigger, previously-hidden bug, found by tracing
+    the actual rotation math rather than assuming the report was scoped to just the new outline
+    feature. rotateX(-pi/2), used to lay a flat Shape down into the XZ ground plane, maps a
+    local (x, y, 0) vertex to world (x, 0, -y) — ringToShape() (shared by addNearMesh AND
+    addEnvelopeMesh, i.e. every near/mid-tier building and every FAR envelope in the entire app)
+    was building shapes with unflipped z, so this rotation silently mirrored every single
+    building north-south relative to the far-tier dots and everything else that projects (x,z)
+    directly. Confirmed live with an exact before/after: the same real building's far-tier dot
+    sat at z=-523.7 while its own near-tier mesh sat at z=+523.4 (an exact sign flip, not a
+    rounding gap) — after negating z in ringToShape(), the near-tier mesh moved to z=-523.4,
+    matching. This had been present since v1.0.0; it was never visually obvious because a
+    borough-wide mirror of a scattered building layout doesn't look wrong on its own, and near/
+    far tiers are never both visible at once to reveal the mismatch against each other — the
+    new borough-outline feature (v1.2.0) is what finally exposed it, because its fill (via the
+    same buggy pattern) and its own stroke (built through a separate, correct code path) ended
+    up side by side and visibly disagreeing. Fixed at the shared root (ringToShape) rather than
+    patched per call site, and addBoroughOutlineMeshes now reuses that same shared helper
+    instead of its own parallel Shape-construction code, specifically to prevent two
+    implementations of the same math drifting out of sync again the way they just did.
   v1.2.1 - 2026-07-14 - Real root cause of "3D navigation not working" and the console flooding
     with "THREE.Material: 'transparent' parameter is undefined" (1000+ times), found live via
     Claude in Chrome, not guessed: (1) addNearMesh()'s isVacant parameter had no default, so
@@ -361,7 +381,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.2.1'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.2.2'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -587,7 +607,7 @@ async function loadBoroughOutlines(){
 }
 function addBoroughOutlineMeshes(rings, label){
   for(const ring of rings){
-    const shape = new THREE.Shape(ring.map(([x,z]) => new THREE.Vector2(x, z)));
+    const shape = ringToShape(ring);
     const geo = new THREE.ShapeGeometry(shape);
     geo.rotateX(-Math.PI/2);
     geo.translate(0, -0.02, 0); // just under the lot/vacant-marker layer
@@ -984,9 +1004,16 @@ function estimateHeightFt(lot){
   return floors * 11; // fallback only — real height_roof from Building Footprints is used whenever present
 }
 
+// IMPORTANT: rotateX(-pi/2), applied after building geometry from this shape, maps a local
+// (x, y, 0) vertex to world (x, 0, -y) — confirmed live: without the negation below, every
+// near/mid-tier building and the FAR-derived envelope rendered exactly z-mirrored relative to
+// the far-tier dots and everything else that projects (x,z) directly (e.g. a real building's
+// far-tier dot sat at z=-523.7 while its own near-tier mesh sat at z=+523.4 — an exact mirror,
+// not a rounding difference). Negating z here cancels that flip so the two rotation stages net
+// out to the identity on Z, matching the rest of the scene's convention.
 function ringToShape(ring){
   const shape = new THREE.Shape();
-  ring.forEach(([x,z], i)=>{ if(i===0) shape.moveTo(x,z); else shape.lineTo(x,z); });
+  ring.forEach(([x,z], i)=>{ if(i===0) shape.moveTo(x,-z); else shape.lineTo(x,-z); });
   return shape;
 }
 function ringArea(ring){
