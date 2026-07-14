@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<!--
+  MASSING
+  Real NYC building massing grown from actual PLUTO/Building Footprints records — one extruded volume per tax lot, from its real recorded height and footprint, with its allowed zoning envelope (FAR-derived) rendered alongside it.
+  Joe.K · axisbim.io
+
+  CHANGELOG
+  v1.0.0 - 2026-07-14 - Initial build: borough-scoped fetch from NYC Open Data (MapPLUTO f888-ni5f joined to Building Footprints 5zhs-2jue on BBL), real footprint extrusion to real heightroof, FAR-derived zoning-envelope overlay (maxFAR × lotarea, comparison to builtfar), three color modes (Land Use / FAR Utilization / Year Built), near/mid/far camera-distance LOD, click-to-inspect, vacant/no-footprint lots as flat lot-polygon markers.
+  KNOWN GAP - field names cross-checked against two independent live-fetched sources this
+    session (NYC OTI's GitHub metadata page for Building Footprints, and PLUTO's published
+    data dictionary field list) and they agree with what's used below. That's higher
+    confidence than memory alone, but it is still not the same as a live query response —
+    no network path to data.cityofnewyork.us exists from the build environment itself.
+    First real load in a browser should be treated the way any STAND fix is: confirmed
+    against the actual response before trusting the numbers.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="description" content="Real NYC building massing grown from PLUTO tax lot records, alongside each lot's FAR-derived zoning envelope.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Massing">
+<meta name="theme-color" content="#EDEAE0" id="themeColorMeta">
+<title>MASSING — NYC building massing from PLUTO</title>
+<style>
+  :root{
+    --paper: #EDEAE0;
+    --paper-deep: #E1DBC7;
+    --card: #F8F6EE;
+    --ink: #201E1A;
+    --ink-soft: #6B6355;
+    --line: #D2C9B0;
+    --accent: #1F4E79;
+    --accent-deep: #163A5C;
+    --warn: #B23A2E;
+    --ok: #3E7A4C;
+    --shadow: 0 1px 0 rgba(32,30,26,0.05), 0 6px 16px -8px rgba(32,30,26,0.28);
+    --font-display: 'Fraunces', serif;
+    --font-body: 'Source Serif 4', Georgia, serif;
+    --font-ui: 'Space Grotesk', 'Inter', sans-serif;
+    --font-mono: 'Space Mono', monospace;
+  }
+  :root[data-theme="dark"]{
+    --paper: #14171B;
+    --paper-deep: #1B1F25;
+    --card: #1E2329;
+    --ink: #E7E5DC;
+    --ink-soft: #8C93A0;
+    --line: #2C323B;
+    --accent: #6FA8DC;
+    --accent-deep: #8FBCE6;
+    --shadow: 0 1px 0 rgba(0,0,0,0.4), 0 8px 22px -10px rgba(0,0,0,0.7);
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{
+    margin:0; background:var(--paper); color:var(--ink); font-family:var(--font-body);
+    min-height:100vh; overflow:hidden;
+    overscroll-behavior-y:contain;
+    padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right);
+  }
+  a{color:inherit;}
+  button, select{font-family:var(--font-ui); cursor:pointer;}
+  ::selection{background:var(--accent); color:#fff;}
+  :focus-visible{outline:3px solid var(--accent); outline-offset:2px;}
+  @media (prefers-reduced-motion: reduce){ *{animation-duration:0.001ms !important; transition-duration:0.001ms !important;} }
+
+  .btn{
+    font-family:var(--font-ui); font-weight:600; font-size:13px;
+    padding:9px 14px; border-radius:6px;
+    border:1.5px solid var(--ink); background:var(--ink); color:var(--paper);
+  }
+  .btn.secondary{background:transparent; color:var(--ink);}
+  .btn.ghost{background:transparent; border-color:transparent; color:var(--ink-soft); padding:6px 8px;}
+  .btn:disabled{opacity:0.45; cursor:not-allowed;}
+  .btn.active{background:var(--accent); border-color:var(--accent); color:#fff;}
+
+  #canvasWrap{position:fixed; inset:0;}
+  canvas{display:block; width:100%; height:100%;}
+
+  header.top{
+    position:fixed; top:0; left:0; right:0; z-index:20;
+    padding:calc(14px + env(safe-area-inset-top)) 16px 12px;
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    background:linear-gradient(to bottom, rgba(237,234,224,0.94), rgba(237,234,224,0));
+    pointer-events:none;
+  }
+  :root[data-theme="dark"] header.top{background:linear-gradient(to bottom, rgba(20,23,27,0.94), rgba(20,23,27,0));}
+  header.top > *{pointer-events:auto;}
+  h1{font-family:var(--font-display); font-size:19px; margin:0; letter-spacing:0.01em;}
+  .subtitle{font-family:var(--font-ui); font-size:11px; letter-spacing:0.07em; color:var(--ink-soft); text-transform:uppercase; margin-left:2px;}
+
+  .panel{
+    background:var(--card); border:1.5px solid var(--line); border-radius:8px;
+    box-shadow:var(--shadow); padding:10px 12px;
+  }
+  .segmented{display:flex; gap:2px; padding:2px; background:var(--paper-deep); border-radius:7px;}
+  .segmented button{
+    border:none; background:transparent; color:var(--ink-soft); font-size:12px; font-weight:600;
+    padding:6px 10px; border-radius:5px;
+  }
+  .segmented button.active{background:var(--card); color:var(--ink); box-shadow:var(--shadow);}
+
+  #sidePanel{
+    position:fixed; top:calc(70px + env(safe-area-inset-top)); right:16px; z-index:20;
+    width:250px; max-height:calc(100vh - 100px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overflow-y:auto; display:flex; flex-direction:column; gap:10px;
+  }
+  #sidePanel .panel-title{font-family:var(--font-ui); font-size:11px; letter-spacing:0.07em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 8px;}
+  .legend-item{display:flex; align-items:center; gap:8px; padding:5px 2px; font-family:var(--font-ui); font-size:12.5px; border:none; background:none; width:100%; text-align:left; color:var(--ink);}
+  .legend-item.off{opacity:0.35;}
+  .swatch{width:12px; height:12px; border-radius:3px; flex:none;}
+
+  #statusBar{
+    position:fixed; bottom:calc(14px + env(safe-area-inset-bottom)); left:16px; z-index:20;
+    font-family:var(--font-mono); font-size:11px; color:var(--ink-soft);
+    background:var(--card); border:1.5px solid var(--line); border-radius:6px; padding:6px 10px;
+  }
+
+  #inspectPanel{
+    position:fixed; bottom:calc(14px + env(safe-area-inset-bottom)); right:16px; z-index:25;
+    width:260px; display:none;
+  }
+  #inspectPanel h3{font-family:var(--font-display); font-size:16px; margin:0 0 6px;}
+  #inspectPanel .row{display:flex; justify-content:space-between; font-family:var(--font-ui); font-size:12px; padding:2px 0; border-bottom:1px solid var(--line);}
+  #inspectPanel .row span:first-child{color:var(--ink-soft);}
+  #inspectPanel .far-bar{height:6px; border-radius:3px; background:var(--paper-deep); margin:8px 0 2px; overflow:hidden;}
+  #inspectPanel .far-bar-fill{height:100%; background:var(--accent);}
+
+  .theme-toggle{
+    width:38px; height:38px; display:flex; align-items:center; justify-content:center;
+    border-radius:50%; border:1.5px solid var(--line); background:var(--card); color:var(--ink);
+    font-size:16px; padding:0;
+  }
+
+  .toast{
+    position:fixed; bottom:calc(22px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%);
+    background:var(--ink); color:var(--paper); font-family:var(--font-ui); font-size:13.5px; font-weight:600;
+    padding:12px 20px; border-radius:8px; box-shadow:var(--shadow);
+    opacity:0; pointer-events:none; transition:opacity 0.25s ease; z-index:60; max-width:90vw; text-align:center;
+  }
+  .toast.show{opacity:1;}
+
+  #loadOverlay{
+    position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
+    background:var(--paper); flex-direction:column; gap:10px;
+  }
+  #loadOverlay.hidden{display:none;}
+  #loadOverlay .spin{width:28px; height:28px; border-radius:50%; border:3px solid var(--line); border-top-color:var(--accent); animation:spin 0.9s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  #loadOverlay p{font-family:var(--font-ui); font-size:13px; color:var(--ink-soft);}
+
+  .confirm-overlay{position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:20px; z-index:60;}
+  .confirm-box{background:var(--card); border-radius:8px; box-shadow:var(--shadow); padding:22px; max-width:360px; width:100%;}
+  .confirm-box p{font-family:var(--font-body); font-size:15.5px; color:var(--ink); margin:0 0 20px; line-height:1.5;}
+  .confirm-actions{display:flex; gap:10px; justify-content:flex-end;}
+
+  footer.foot{
+    position:fixed; bottom:0; left:0; right:0; z-index:5;
+    text-align:center; padding:4px 12px calc(6px + env(safe-area-inset-bottom));
+    font-family:var(--font-ui); font-size:10px; letter-spacing:0.06em; color:var(--ink-soft); opacity:0.7;
+    pointer-events:none;
+  }
+
+  @media (max-width: 640px){
+    #sidePanel{width:200px;}
+    #inspectPanel{width:200px;}
+  }
+</style>
+</head>
+<body>
+
+<div id="canvasWrap"></div>
+
+<header class="top">
+  <div>
+    <h1>MASSING</h1>
+    <div class="subtitle">real NYC building volumes, grown from PLUTO</div>
+  </div>
+  <div class="panel segmented" id="boroughPicker">
+    <button data-boro="1" class="active">MN</button>
+    <button data-boro="2">BX</button>
+    <button data-boro="3">BK</button>
+    <button data-boro="4">QN</button>
+    <button data-boro="5">SI</button>
+  </div>
+  <div class="panel segmented" id="colorModePicker">
+    <button data-mode="landuse" class="active">Land Use</button>
+    <button data-mode="far">FAR Use</button>
+    <button data-mode="year">Year Built</button>
+  </div>
+  <button class="btn secondary panel" id="envelopeToggle">Show zoning envelope</button>
+  <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode">🌙</button>
+</header>
+
+<div id="sidePanel" class="panel">
+  <div class="panel-title" id="legendTitle">Land Use</div>
+  <div id="legendList"></div>
+</div>
+
+<div id="statusBar">loading…</div>
+
+<div id="inspectPanel" class="panel">
+  <h3 id="inspectAddr">—</h3>
+  <div class="row"><span>BBL</span><span id="inspectBBL">—</span></div>
+  <div class="row"><span>Land use</span><span id="inspectLandUse">—</span></div>
+  <div class="row"><span>Built</span><span id="inspectYear">—</span></div>
+  <div class="row"><span>Height (real)</span><span id="inspectHeight">—</span></div>
+  <div class="row"><span>Floors</span><span id="inspectFloors">—</span></div>
+  <div class="row"><span>Lot area</span><span id="inspectLotArea">—</span></div>
+  <div class="row"><span>Built FAR</span><span id="inspectBuiltFar">—</span></div>
+  <div class="row"><span>Max FAR (allowed)</span><span id="inspectMaxFar">—</span></div>
+  <div class="far-bar"><div class="far-bar-fill" id="farBarFill" style="width:0%"></div></div>
+  <div style="font-family:var(--font-ui); font-size:10.5px; color:var(--ink-soft); text-align:right;">FAR used vs. allowed</div>
+</div>
+
+<div id="loadOverlay"><div class="spin"></div><p id="loadMsg">Fetching Manhattan tax lots…</p></div>
+
+<footer class="foot" id="footVersion"></footer>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const APP_VERSION = '1.0.0'; // keep in sync with the header changelog block and the footer tag below
+
+/* ================= Toast ================= */
+let toastTimer = null;
+function toast(msg){
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>el.classList.remove('show'), 2800);
+}
+
+/* ================= Confirm dialog (replaces native confirm()) ================= */
+function confirmDialog(message, confirmLabel = 'Clear'){
+  return new Promise(resolve=>{
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.innerHTML = `
+      <div class="confirm-box">
+        <p>${escapeHtml(message)}</p>
+        <div class="confirm-actions">
+          <button class="btn secondary" id="confirmCancel">Cancel</button>
+          <button class="btn" id="confirmOk" style="background:var(--accent); border-color:var(--accent);">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const cleanup = (result)=>{ overlay.remove(); resolve(result); };
+    overlay.addEventListener('click', (e)=>{ if(e.target === overlay) cleanup(false); });
+    document.getElementById('confirmCancel').onclick = ()=>cleanup(false);
+    document.getElementById('confirmOk').onclick = ()=>cleanup(true);
+  });
+}
+
+/* ================= Helpers ================= */
+function escapeHtml(s){
+  return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeAttr(s){ return escapeHtml(s); }
+
+// mulberry32 seeded PRNG — per-BBL deterministic variation
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function seedFromBBL(bbl){
+  let h = 0;
+  for(let i=0;i<bbl.length;i++){ h = (Math.imul(h,31) + bbl.charCodeAt(i))|0; }
+  return h;
+}
+
+/* ================= fetchWithTimeout — every live geo fetch goes through this ================= */
+async function fetchWithTimeout(url, {timeoutMs=15000, retries=3} = {}){
+  let lastErr;
+  for(let attempt=0; attempt<retries; attempt++){
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), timeoutMs);
+    try{
+      const res = await fetch(url, {signal: controller.signal});
+      clearTimeout(timer);
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    }catch(err){
+      clearTimeout(timer);
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
+/* ================= Data sources =================
+   MapPLUTO (f888-ni5f): PLUTO attributes + lot polygon geometry, joined on bbl.
+   Building Footprints (5zhs-2jue): real building outline + real heightroof, joined on mpluto_bbl.
+   Field names below are from DCP/OTI's published data dictionaries — not yet confirmed against
+   a live query from this build environment (see header comment KNOWN GAP). Treat the first real
+   load the way any STAND live-data fix is treated: verify against the actual response, don't
+   assume the field list is right because it matches documentation. */
+const SOCRATA_BASE = 'https://data.cityofnewyork.us/resource/';
+const MAPPLUTO_RESOURCE = 'f888-ni5f';
+const FOOTPRINT_RESOURCE = '5zhs-2jue';
+const MAX_LOTS_PER_BOROUGH = 15000; // v1.0.0 perf guard — raise once real-world frame time is verified live
+const BORO_CODE_TO_LETTER = {1:'MN', 2:'BX', 3:'BK', 4:'QN', 5:'SI'};
+const CACHE_VERSION = 'v1'; // bump this any time the field selection or join logic changes
+
+const MAPPLUTO_FIELDS = ['bbl','borough','block','lot','address','zipcode','landuse','bldgclass',
+  'lotarea','bldgarea','comarea','resarea','numbldgs','numfloors','unitsres','unitstotal',
+  'yearbuilt','zonedist1','overlay1','spdist1','builtfar','residfar','commfar','facilfar',
+  'latitude','longitude','the_geom'];
+const FOOTPRINT_FIELDS = ['mpluto_bbl','heightroof','groundelev','cnstrct_yr','feat_code','the_geom'];
+
+async function fetchMapPlutoBorough(boroLetter){
+  const select = MAPPLUTO_FIELDS.join(',');
+  const rows = [];
+  let offset = 0;
+  const pageSize = 5000;
+  while(rows.length < MAX_LOTS_PER_BOROUGH){
+    const url = `${SOCRATA_BASE}${MAPPLUTO_RESOURCE}.json?$select=${select}&$where=borough='${boroLetter}'&$limit=${pageSize}&$offset=${offset}`;
+    const page = await fetchWithTimeout(url);
+    rows.push(...page);
+    if(page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return rows.slice(0, MAX_LOTS_PER_BOROUGH);
+}
+
+async function fetchFootprintsBorough(boroDigit){
+  const select = FOOTPRINT_FIELDS.join(',');
+  const rows = [];
+  let offset = 0;
+  const pageSize = 5000;
+  // footprints has no borough field of its own — filter by the leading digit of mpluto_bbl
+  while(true){
+    const url = `${SOCRATA_BASE}${FOOTPRINT_RESOURCE}.json?$select=${select}&$where=starts_with(mpluto_bbl,'${boroDigit}')&$limit=${pageSize}&$offset=${offset}`;
+    const page = await fetchWithTimeout(url);
+    rows.push(...page);
+    if(page.length < pageSize || rows.length > MAX_LOTS_PER_BOROUGH * 2) break;
+    offset += pageSize;
+  }
+  return rows;
+}
+
+function cacheKey(boroLetter){ return `massing_cache_${CACHE_VERSION}_${boroLetter}`; }
+function loadFromCache(boroLetter){
+  try{
+    const raw = localStorage.getItem(cacheKey(boroLetter));
+    if(!raw) return null;
+    return JSON.parse(raw);
+  }catch(e){ return null; }
+}
+function saveToCache(boroLetter, data){
+  try{ localStorage.setItem(cacheKey(boroLetter), JSON.stringify(data)); }
+  catch(e){ /* quota exceeded — fine, just skip caching */ }
+}
+
+async function loadBoroughData(boroDigit){
+  const boroLetter = BORO_CODE_TO_LETTER[boroDigit];
+  const cached = loadFromCache(boroLetter);
+  if(cached){ toast(`${boroLetter} loaded from cache`); return cached; }
+
+  document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} tax lots…`;
+  const plutoRows = await fetchMapPlutoBorough(boroLetter);
+
+  document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} building footprints…`;
+  const footprintRows = await fetchFootprintsBorough(boroDigit);
+
+  document.getElementById('loadMsg').textContent = `Joining ${plutoRows.length} lots to ${footprintRows.length} footprints…`;
+  const footprintsByBBL = {};
+  for(const fp of footprintRows){
+    const bbl = fp.mpluto_bbl;
+    if(!bbl) continue;
+    (footprintsByBBL[bbl] = footprintsByBBL[bbl] || []).push(fp);
+  }
+  const records = plutoRows.map(lot=>({ lot, footprints: footprintsByBBL[lot.bbl] || [] }));
+  saveToCache(boroLetter, records);
+  return records;
+}
+
+/* ================= Projection ================= */
+// Simple equirectangular projection centered on NYC, in feet, then scaled to world units.
+// Not a true State Plane projection — fine at city scale for a generative-art render, same
+// spirit as STAND's coastline approximation.
+const REF_LON = -73.97, REF_LAT = 40.70;
+const FT_PER_DEG_LAT = 364000;
+const FT_PER_DEG_LON = 364000 * Math.cos(REF_LAT * Math.PI/180);
+const FEET_PER_WORLD_UNIT = 50;
+function projectLonLat(lon, lat){
+  const xFt = (lon - REF_LON) * FT_PER_DEG_LON;
+  const zFt = -(lat - REF_LAT) * FT_PER_DEG_LAT;
+  return [xFt / FEET_PER_WORLD_UNIT, zFt / FEET_PER_WORLD_UNIT];
+}
+function ftToWorld(ft){ return ft / FEET_PER_WORLD_UNIT; }
+
+// Extract the outer ring of a GeoJSON Polygon/MultiPolygon's largest part, as world-space [x,z] pairs.
+function outerRingWorld(geom){
+  if(!geom || !geom.coordinates) return null;
+  let rings;
+  if(geom.type === 'Polygon') rings = [geom.coordinates];
+  else if(geom.type === 'MultiPolygon') rings = geom.coordinates;
+  else return null;
+  // pick the polygon part with the most vertices as the "main" part for v1 (multi-part lots are rare)
+  let best = rings[0];
+  for(const part of rings){ if(part[0].length > best[0].length) best = part; }
+  const outer = best[0];
+  return outer.map(([lon,lat]) => projectLonLat(lon, lat));
+}
+
+/* ================= Color modes ================= */
+const LANDUSE_LABELS = {
+  '01':'One & Two Family', '02':'Multi-Family Walkup', '03':'Multi-Family Elevator',
+  '04':'Mixed Res/Commercial', '05':'Commercial/Office', '06':'Industrial/Manufacturing',
+  '07':'Transportation/Utility', '08':'Public Facility', '09':'Open Space/Recreation',
+  '10':'Parking', '11':'Vacant Land'
+};
+const LANDUSE_COLORS = {
+  '01':0xC8932A, '02':0xB23A2E, '03':0x8E4529, '04':0xE28A5C,
+  '05':0x1F4E79, '06':0x5A5F66, '07':0x746553, '08':0x3E7A4C,
+  '09':0x6FA87A, '10':0x9C9587, '11':0xCFC8B4
+};
+function colorForLandUse(lu){ return LANDUSE_COLORS[lu] || 0x9C9587; }
+
+function maxAllowedFar(lot){
+  return Math.max(Number(lot.residfar)||0, Number(lot.commfar)||0, Number(lot.facilfar)||0);
+}
+function farUtilization(lot){
+  const maxFar = maxAllowedFar(lot);
+  const built = Number(lot.builtfar)||0;
+  if(maxFar <= 0) return null;
+  return built / maxFar;
+}
+function colorForFarUtilization(lot){
+  const u = farUtilization(lot);
+  if(u === null) return 0x9C9587;
+  const t = Math.max(0, Math.min(1.15, u)) / 1.15;
+  const c = new THREE.Color();
+  c.setHSL(0.02 + t*0.32, 0.55, 0.42);
+  return c.getHex();
+}
+function colorForYearBuilt(lot){
+  const yr = Number(lot.yearbuilt) || 0;
+  if(yr < 1800) return 0x9C9587;
+  const t = Math.max(0, Math.min(1, (yr - 1850) / (2026 - 1850)));
+  const c = new THREE.Color();
+  c.setHSL(0.6 - t*0.55, 0.5, 0.42);
+  return c.getHex();
+}
+function colorForLot(lot, mode){
+  if(mode === 'landuse') return colorForLandUse(lot.landuse);
+  if(mode === 'far') return colorForFarUtilization(lot);
+  if(mode === 'year') return colorForYearBuilt(lot);
+  return 0x9C9587;
+}
+
+/* ================= Three.js scene ================= */
+let scene, camera, renderer;
+let camDist = 60, camAzimuth = 0.9, camElevation = 0.55;
+let camTarget = new THREE.Vector3(0,0,0);
+let colorMode = 'landuse';
+let showEnvelope = false;
+let currentRecords = [];
+const hiddenCategories = new Set();
+
+const nearGroup = new THREE.Group();   // full extrusion + floor lines
+const midGroup = new THREE.Group();    // bounding-box prism
+const farGroup = new THREE.Group();    // billboard points
+const envelopeGroup = new THREE.Group();
+let farPoints = null, farPointRecords = [];
+
+const NEAR_MAX_DIST = 14;
+const MID_MAX_DIST = 55;
+
+function initScene(){
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 4000);
+  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.getElementById('canvasWrap').appendChild(renderer.domElement);
+
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+  sun.position.set(80, 120, 60);
+  scene.add(sun);
+
+  scene.add(nearGroup, midGroup, farGroup, envelopeGroup);
+
+  updateCameraPosition();
+  window.addEventListener('resize', onResize);
+  wireOrbitControls();
+  wireClickToInspect();
+  animate();
+}
+function onResize(){
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+function updateCameraPosition(){
+  const x = camTarget.x + camDist * Math.cos(camElevation) * Math.sin(camAzimuth);
+  const y = camTarget.y + camDist * Math.sin(camElevation);
+  const z = camTarget.z + camDist * Math.cos(camElevation) * Math.cos(camAzimuth);
+  camera.position.set(x,y,z);
+  camera.lookAt(camTarget);
+}
+
+/* ---- custom orbit controls: drag to rotate, wheel to zoom, shift-drag to pan ---- */
+function wireOrbitControls(){
+  const dom = renderer.domElement;
+  let dragging = false, panning = false, lastX=0, lastY=0;
+  dom.addEventListener('pointerdown', (e)=>{
+    dragging = true; panning = e.shiftKey || e.button === 2;
+    lastX = e.clientX; lastY = e.clientY;
+    dom.setPointerCapture(e.pointerId);
+  });
+  dom.addEventListener('pointermove', (e)=>{
+    if(!dragging) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    if(panning){
+      const panScale = camDist * 0.0018;
+      const right = new THREE.Vector3(Math.cos(camAzimuth), 0, -Math.sin(camAzimuth));
+      camTarget.addScaledVector(right, -dx*panScale);
+      camTarget.y += dy*panScale;
+    } else {
+      camAzimuth -= dx * 0.006;
+      camElevation = Math.max(0.08, Math.min(1.5, camElevation + dy * 0.006));
+    }
+    updateCameraPosition();
+  });
+  window.addEventListener('pointerup', ()=>{ dragging=false; });
+  dom.addEventListener('wheel', (e)=>{
+    e.preventDefault();
+    camDist = Math.max(1.5, Math.min(1400, camDist * (1 + e.deltaY*0.0012)));
+    updateCameraPosition();
+    updateLOD();
+  }, {passive:false});
+  dom.addEventListener('contextmenu', (e)=>e.preventDefault());
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+
+/* ================= LOD ================= */
+function camDistToTarget(){ return camera.position.distanceTo(camTarget); }
+function updateLOD(){
+  const d = camDistToTarget();
+  const near = d < NEAR_MAX_DIST;
+  const mid = !near && d < MID_MAX_DIST;
+  nearGroup.visible = near;
+  midGroup.visible = mid;
+  farGroup.visible = !near && !mid;
+  document.getElementById('statusBar').textContent =
+    `${currentRecords.length} lots · LOD: ${near?'near (full massing)':mid?'mid (block)':'far (dot)'} · dist ${d.toFixed(0)}`;
+}
+
+/* ================= Massing builder ================= */
+function buildBoroughMeshes(records){
+  // dispose old geometry, same pattern as a STAND borough switch
+  [nearGroup, midGroup, farGroup, envelopeGroup].forEach(g=>{
+    g.children.forEach(c=>{ if(c.geometry) c.geometry.dispose(); if(c.material) c.material.dispose(); });
+    g.clear();
+  });
+  farPointRecords = [];
+
+  const farPositions = [], farColors = [], farSizes = [];
+
+  for(const rec of records){
+    const lot = rec.lot;
+    if(hiddenCategories.has(categoryForLot(lot))) continue;
+    const color = colorForLot(lot, colorMode);
+    const hasFootprints = rec.footprints && rec.footprints.length > 0;
+
+    if(hasFootprints){
+      for(const fp of rec.footprints){
+        const ring = outerRingWorld(fp.the_geom);
+        if(!ring || ring.length < 3) continue;
+        const heightFt = Number(fp.heightroof) || estimateHeightFt(lot);
+        addNearMesh(ring, heightFt, color, lot);
+        addMidMesh(ring, heightFt, color);
+        pushFarPoint(ring, heightFt, color, farPositions, farColors, farSizes, rec);
+      }
+    } else {
+      // vacant / no footprint record — flat lot-polygon marker per v1 decision
+      const ring = outerRingWorld(lot.the_geom);
+      if(ring && ring.length >= 3){
+        addNearMesh(ring, 2, 0x9C9587, lot, true);
+        addMidMesh(ring, 2, 0x9C9587);
+        pushFarPoint(ring, 2, 0x9C9587, farPositions, farColors, farSizes, rec);
+      }
+    }
+
+    if(showEnvelope) addEnvelopeMesh(rec);
+  }
+
+  buildFarPoints(farPositions, farColors, farSizes);
+  updateLOD();
+}
+
+function estimateHeightFt(lot){
+  const floors = Number(lot.numfloors) || 1;
+  return floors * 11; // fallback only — real heightroof from Building Footprints is used whenever present
+}
+
+function ringToShape(ring){
+  const shape = new THREE.Shape();
+  ring.forEach(([x,z], i)=>{ if(i===0) shape.moveTo(x,z); else shape.lineTo(x,z); });
+  return shape;
+}
+function ringArea(ring){
+  let a = 0;
+  for(let i=0;i<ring.length;i++){
+    const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
+    a += x1*z2 - x2*z1;
+  }
+  return Math.abs(a/2) * FEET_PER_WORLD_UNIT * FEET_PER_WORLD_UNIT; // back to sq ft
+}
+
+function addNearMesh(ring, heightFt, color, lot, isVacant){
+  const shape = ringToShape(ring);
+  const depth = ftToWorld(heightFt);
+  const geo = new THREE.ExtrudeGeometry(shape, {depth, bevelEnabled:false, steps:1});
+  geo.rotateX(-Math.PI/2);
+  const mat = new THREE.MeshLambertMaterial({color, transparent:isVacant, opacity:isVacant?0.35:1});
+  const mesh = new THREE.Mesh(geo, mat);
+  nearGroup.add(mesh);
+
+  if(!isVacant){
+    const floors = Math.max(1, Math.round(Number(lot.numfloors) || heightFt/11));
+    addFloorLines(ring, heightFt, floors);
+  }
+}
+
+function addFloorLines(ring, heightFt, floors){
+  const floorH = ftToWorld(heightFt) / floors;
+  const pts = [];
+  for(let f=1; f<floors; f++){
+    const y = f * floorH;
+    for(let i=0;i<ring.length;i++){
+      const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
+      pts.push(x1,y,z1, x2,y,z2);
+    }
+  }
+  if(!pts.length) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const mat = new THREE.LineBasicMaterial({color:0x000000, transparent:true, opacity:0.12});
+  nearGroup.add(new THREE.LineSegments(geo, mat));
+}
+
+function addMidMesh(ring, heightFt, color){
+  let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity;
+  ring.forEach(([x,z])=>{ minX=Math.min(minX,x); maxX=Math.max(maxX,x); minZ=Math.min(minZ,z); maxZ=Math.max(maxZ,z); });
+  const w = Math.max(0.02, maxX-minX), d = Math.max(0.02, maxZ-minZ), h = ftToWorld(heightFt);
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({color}));
+  mesh.position.set((minX+maxX)/2, h/2, (minZ+maxZ)/2);
+  midGroup.add(mesh);
+}
+
+function pushFarPoint(ring, heightFt, color, positions, colors, sizes, rec){
+  let cx=0, cz=0;
+  ring.forEach(([x,z])=>{ cx+=x; cz+=z; });
+  cx/=ring.length; cz/=ring.length;
+  positions.push(cx, ftToWorld(heightFt)*0.5, cz);
+  const c = new THREE.Color(color);
+  colors.push(c.r, c.g, c.b);
+  sizes.push(Math.max(1.5, Math.sqrt(ringArea(ring))/20));
+  farPointRecords.push(rec);
+}
+function buildFarPoints(positions, colors, sizes){
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+  const mat = new THREE.PointsMaterial({size:3, vertexColors:true, sizeAttenuation:true});
+  farPoints = new THREE.Points(geo, mat);
+  farGroup.add(farPoints);
+}
+
+/* ---- FAR-derived zoning envelope (Option A from the scoping pass — see project notes) ---- */
+function addEnvelopeMesh(rec){
+  const lot = rec.lot;
+  const maxFar = maxAllowedFar(lot);
+  const lotAreaFt = Number(lot.lotarea) || 0;
+  if(maxFar <= 0 || lotAreaFt <= 0) return;
+  const maxBuildableAreaFt = lotAreaFt * maxFar;
+
+  const ring = (rec.footprints && rec.footprints[0]) ? outerRingWorld(rec.footprints[0].the_geom) : outerRingWorld(lot.the_geom);
+  if(!ring || ring.length < 3) return;
+  const footprintAreaFt = ringArea(ring) || lotAreaFt;
+  const envelopeHeightFt = maxBuildableAreaFt / footprintAreaFt;
+
+  const util = farUtilization(lot);
+  const color = util === null ? 0x1F4E79 : (util >= 0.95 ? 0x3E7A4C : util < 0.5 ? 0xB23A2E : 0xC8932A);
+
+  const shape = ringToShape(ring);
+  const geo = new THREE.ExtrudeGeometry(shape, {depth: ftToWorld(envelopeHeightFt), bevelEnabled:false, steps:1});
+  geo.rotateX(-Math.PI/2);
+  const mat = new THREE.MeshBasicMaterial({color, wireframe:true, transparent:true, opacity:0.35});
+  envelopeGroup.add(new THREE.Mesh(geo, mat));
+}
+
+function categoryForLot(lot){
+  if(colorMode === 'landuse') return lot.landuse || '?';
+  if(colorMode === 'year'){
+    const yr = Number(lot.yearbuilt)||0;
+    return yr ? String(Math.floor(yr/20)*20) : '?';
+  }
+  return '?'; // FAR-utilization mode is a continuous gradient, not togglable categories
+}
+
+/* ================= Click to inspect ================= */
+function wireClickToInspect(){
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  renderer.domElement.addEventListener('click', (e)=>{
+    mouse.x = (e.clientX/window.innerWidth)*2 - 1;
+    mouse.y = -(e.clientY/window.innerHeight)*2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const activeGroup = nearGroup.visible ? nearGroup : midGroup.visible ? midGroup : null;
+    if(activeGroup){
+      const hits = raycaster.intersectObjects(activeGroup.children);
+      if(hits.length){ showInspectFromWorldPoint(hits[0].point); return; }
+    }
+    if(farGroup.visible && farPoints){
+      const hits = raycaster.intersectObject(farPoints, false);
+      if(hits.length && hits[0].index != null){
+        showInspectRecord(farPointRecords[hits[0].index]); return;
+      }
+    }
+  });
+}
+function showInspectFromWorldPoint(point){
+  // nearest-record lookup by projected centroid — good enough for near/mid tiers where lots are sparse on screen
+  let best = null, bestDist = Infinity;
+  for(const rec of currentRecords){
+    const lot = rec.lot;
+    if(!lot.latitude || !lot.longitude) continue;
+    const [x,z] = projectLonLat(Number(lot.longitude), Number(lot.latitude));
+    const dist = (x-point.x)**2 + (z-point.z)**2;
+    if(dist < bestDist){ bestDist = dist; best = rec; }
+  }
+  if(best) showInspectRecord(best);
+}
+function showInspectRecord(rec){
+  if(!rec) return;
+  const lot = rec.lot;
+  document.getElementById('inspectPanel').style.display = 'block';
+  document.getElementById('inspectAddr').textContent = lot.address || `BBL ${lot.bbl}`;
+  document.getElementById('inspectBBL').textContent = lot.bbl || '—';
+  document.getElementById('inspectLandUse').textContent = LANDUSE_LABELS[lot.landuse] || lot.landuse || '—';
+  document.getElementById('inspectYear').textContent = lot.yearbuilt || '—';
+  const fp = rec.footprints && rec.footprints[0];
+  document.getElementById('inspectHeight').textContent = fp && fp.heightroof ? `${Math.round(fp.heightroof)} ft (real)` : (lot.numfloors ? `~${Math.round(estimateHeightFt(lot))} ft (est.)` : '—');
+  document.getElementById('inspectFloors').textContent = lot.numfloors || '—';
+  document.getElementById('inspectLotArea').textContent = lot.lotarea ? `${Number(lot.lotarea).toLocaleString()} sf` : '—';
+  document.getElementById('inspectBuiltFar').textContent = lot.builtfar || '—';
+  const maxFar = maxAllowedFar(lot);
+  document.getElementById('inspectMaxFar').textContent = maxFar ? maxFar.toFixed(2) : '—';
+  const util = farUtilization(lot);
+  document.getElementById('farBarFill').style.width = util === null ? '0%' : `${Math.min(115, util*100)}%`;
+}
+
+/* ================= UI wiring ================= */
+function updateLegend(){
+  const list = document.getElementById('legendList');
+  const title = document.getElementById('legendTitle');
+  list.innerHTML = '';
+  if(colorMode === 'landuse'){
+    title.textContent = 'Land Use';
+    Object.entries(LANDUSE_LABELS).forEach(([code, label])=>{
+      const off = hiddenCategories.has(code);
+      const btn = document.createElement('button');
+      btn.className = `legend-item${off?' off':''}`;
+      btn.innerHTML = `<span class="swatch" style="background:#${colorForLandUse(code).toString(16).padStart(6,'0')}"></span>${escapeHtml(label)}`;
+      btn.onclick = ()=>{ off ? hiddenCategories.delete(code) : hiddenCategories.add(code); buildBoroughMeshes(currentRecords); updateLegend(); };
+      list.appendChild(btn);
+    });
+  } else if(colorMode === 'far'){
+    title.textContent = 'FAR Utilization';
+    list.innerHTML = `<div style="font-family:var(--font-ui); font-size:11.5px; color:var(--ink-soft); line-height:1.5;">
+      Continuous gradient: built FAR ÷ max allowed FAR (residential/commercial/community-facility, whichever is greatest).<br><br>
+      <span class="swatch" style="background:#B23A2E; display:inline-block;"></span> underbuilt&nbsp;&nbsp;
+      <span class="swatch" style="background:#C8932A; display:inline-block;"></span> partial&nbsp;&nbsp;
+      <span class="swatch" style="background:#3E7A4C; display:inline-block;"></span> at/over capacity</div>`;
+  } else if(colorMode === 'year'){
+    title.textContent = 'Year Built';
+    list.innerHTML = `<div style="font-family:var(--font-ui); font-size:11.5px; color:var(--ink-soft); line-height:1.5;">
+      Continuous gradient, 1850 (cool) → present (warm). Per-decade filtering not in v1.0.0 — flag if worth adding.</div>`;
+  }
+}
+
+async function selectBorough(boroDigit){
+  document.getElementById('loadOverlay').classList.remove('hidden');
+  document.getElementById('inspectPanel').style.display = 'none';
+  try{
+    const records = await loadBoroughData(boroDigit);
+    currentRecords = records;
+    buildBoroughMeshes(records);
+    toast(`${BORO_CODE_TO_LETTER[boroDigit]}: ${records.length} lots rendered`);
+  }catch(err){
+    console.error(err);
+    toast(`Could not load borough data — ${err.message}`);
+  }finally{
+    document.getElementById('loadOverlay').classList.add('hidden');
+  }
+}
+
+document.getElementById('boroughPicker').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-boro]');
+  if(!btn) return;
+  document.querySelectorAll('#boroughPicker button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  selectBorough(Number(btn.dataset.boro));
+});
+document.getElementById('colorModePicker').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button[data-mode]');
+  if(!btn) return;
+  document.querySelectorAll('#colorModePicker button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  colorMode = btn.dataset.mode;
+  hiddenCategories.clear();
+  updateLegend();
+  buildBoroughMeshes(currentRecords);
+});
+document.getElementById('envelopeToggle').addEventListener('click', (e)=>{
+  showEnvelope = !showEnvelope;
+  e.target.classList.toggle('active', showEnvelope);
+  e.target.textContent = showEnvelope ? 'Hide zoning envelope' : 'Show zoning envelope';
+  buildBoroughMeshes(currentRecords);
+});
+
+/* ================= Theme ================= */
+function currentTheme(){ return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
+function applyThemeChrome(){
+  const dark = currentTheme() === 'dark';
+  document.getElementById('themeToggle').textContent = dark ? '☀️' : '🌙';
+  document.getElementById('themeColorMeta').setAttribute('content', dark ? '#14171B' : '#EDEAE0');
+}
+function toggleTheme(){
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  applyThemeChrome();
+}
+document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+
+/* ================= Boot ================= */
+(function boot(){
+  applyThemeChrome();
+  document.getElementById('footVersion').innerHTML = `MASSING · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a>`;
+  initScene();
+  updateLegend();
+  selectBorough(1);
+})();
+</script>
+</body>
+</html>
