@@ -5,6 +5,26 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.5 - 2026-07-14 - Requested borough/landmass name labels, full names not abbreviations.
+    loadBoroughOutlines() already fetched each borough's name alongside its outline geometry
+    (the boro_name field from the same NYC Open Data resource) and passed it into
+    addBoroughOutlineMeshes(rings, label) — but label was never actually used for anything.
+    Added a canvas-texture Sprite label (full name, matching the app's own --font-ui) placed at
+    the largest ring's area-weighted centroid, not a plain point average or the first ring —
+    the Bronx and others have separate island/mainland ring parts, and averaging their
+    centroids together can land a label in open water between them. Labels are wayfinding
+    context, so they follow the same near/mid/far LOD split as everything else: hidden at near
+    (close-up building detail) where a giant borough name would just clutter the view, visible
+    at mid/far.
+  v1.4.4 - 2026-07-14 - Reported the 5 borough outlines get jittery / break into segments when
+    zooming, not a continuous boundary line. Root cause: z-fighting between the outline (sitting
+    just -0.01 world units below the y=0 ground plane) and the ground itself — a standard depth
+    buffer loses precision fast across this scene's near/far ratio (0.1 to 4000 = 40,000:1), so
+    different pixels of the same line resolve inconsistently at typical camera distances. Same
+    root-cause class as a fix already shipped on the sibling STAND project. Enabled
+    logarithmicDepthBuffer on the renderer (the general fix — helps any thin coplanar-ish
+    geometry, not just this one line) and, as a backstop, increased the outline's ground offset
+    (-0.01 → -0.3) and set depthWrite:false on its material.
   v1.4.3 - 2026-07-14 - Reported the zoom-in limit and "nav gets stuck/jammed, can't pan" were
     still issues after v1.4.1. Confirmed live: v1.4.1's lower MIN_CAM_DIST (0.35 = 17.5ft) let
     the camera end up INSIDE a building's extruded volume — real NYC footprints are routinely
@@ -595,7 +615,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.3'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.5'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -819,6 +839,48 @@ async function loadBoroughOutlines(){
     console.warn('Borough outlines failed to load (context layer only, rest of the app is unaffected):', err);
   }
 }
+function ringCentroid(ring){
+  // area-weighted polygon centroid (shoelace-based) — a plain point average would pull the
+  // label toward whichever stretch of coastline happens to have the densest sampling, not
+  // toward the visual middle of the shape
+  let cx=0, cz=0, areaSum=0;
+  for(let i=0;i<ring.length;i++){
+    const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
+    const cross = x1*z2 - x2*z1;
+    areaSum += cross;
+    cx += (x1+x2)*cross;
+    cz += (z1+z2)*cross;
+  }
+  areaSum *= 0.5;
+  if(Math.abs(areaSum) < 1e-9){
+    let sx=0, sz=0;
+    ring.forEach(([x,z])=>{ sx+=x; sz+=z; });
+    return [sx/ring.length, sz/ring.length];
+  }
+  return [cx/(6*areaSum), cz/(6*areaSum)];
+}
+function buildBoroughLabelSprite(text){
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const fontPx = 64;
+  const fontSpec = `600 ${fontPx}px 'Space Grotesk', sans-serif`; // matches the app's own --font-ui
+  ctx.font = fontSpec;
+  const label = text.toUpperCase();
+  const padX = 28;
+  canvas.width = Math.ceil(ctx.measureText(label).width) + padX*2;
+  canvas.height = Math.round(fontPx * 1.6);
+  ctx.font = fontSpec; // canvas resize resets all context state, font included — must re-set
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(156,145,122,0.85)'; // same tan family as the borough outline stroke (#9C917A)
+  ctx.fillText(label, canvas.width/2, canvas.height/2);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
+  const worldHeight = 26; // world units — tuned legible around the default recenter dist=750
+  sprite.scale.set(worldHeight * (canvas.width/canvas.height), worldHeight, 1);
+  return sprite;
+}
 function addBoroughOutlineMeshes(rings, label){
   // v1.2.4: the filled ShapeGeometry wash is gone. Two rounds of trying to make real NYC
   // coastline data triangulate cleanly both failed for the same underlying reason — even after
@@ -832,11 +894,26 @@ function addBoroughOutlineMeshes(rings, label){
   // line segments, never triangulated. Matches the project's own standing lesson: after a
   // mechanism breaks the same way twice, stop re-patching it and reconsider the design instead.
   for(const ring of rings){
-    const pts3d = ring.map(([x,z]) => new THREE.Vector3(x, -0.01, z));
+    // backstop alongside the logarithmicDepthBuffer fix above: a bigger separation from the
+    // ground plane (was -0.01, now -0.3 — still visually flush at this scene's scale) gives
+    // more absolute margin before precision loss can matter, and depthWrite:false is standard
+    // practice for a transparent overlay line so overlapping segments of the SAME outline don't
+    // z-fight each other regardless of camera distance
+    const pts3d = ring.map(([x,z]) => new THREE.Vector3(x, -0.3, z));
     pts3d.push(pts3d[0]);
     const lineGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
     lineGeo.computeBoundingSphere();
-    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x9C917A, transparent:true, opacity:0.55})));
+    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x9C917A, transparent:true, opacity:0.55, depthWrite:false})));
+  }
+  if(label && rings.length){
+    // place at the largest ring's centroid, not the first ring or an average across all
+    // rings — a borough like the Bronx has several separate island/mainland parts, and
+    // averaging their centroids together can land the label in open water between them
+    const largest = rings.reduce((a,b) => ringArea(b) > ringArea(a) ? b : a, rings[0]);
+    const [cx, cz] = ringCentroid(largest);
+    const sprite = buildBoroughLabelSprite(label);
+    sprite.position.set(cx, 3, cz);
+    labelGroup.add(sprite);
   }
 }
 
@@ -1080,6 +1157,7 @@ const midGroup = new THREE.Group();    // bounding-box prism
 const farGroup = new THREE.Group();    // billboard points
 const envelopeGroup = new THREE.Group();
 const contextGroup = new THREE.Group(); // borough outlines — loaded once, independent of the per-borough lot data
+const labelGroup = new THREE.Group(); // v1.4.5: borough name labels, same load pass as the outlines
 let farPoints = null, farPointRecords = [];
 
 const NEAR_MAX_DIST = 14;
@@ -1170,7 +1248,20 @@ function initScene(){
   scene = new THREE.Scene();
   applySkyBackground();
   camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 4000);
-  renderer = new THREE.WebGLRenderer({antialias:true});
+  // v1.4.4: reported the 5 borough outlines get jittery / break into segments when zooming —
+  // classic z-fighting: the outline sits only -0.01 world units below the y=0 ground plane
+  // (line 839 area), and a standard (non-logarithmic) depth buffer loses precision fast across
+  // this scene's near/far ratio (camera.near=0.1, far=4000 → 40,000:1). At typical mid-far
+  // camera distances the depth buffer can no longer reliably tell the outline and the ground
+  // apart, so different pixels of the same continuous line resolve to whichever surface wins
+  // that pixel's rounding — reads as flicker/jitter and apparent line breaks, worse as camDist
+  // grows. This is the same root cause class as a fix already shipped on the sibling STAND
+  // project (a thin offset layer z-fighting the ground at large camera distances). The correct
+  // general fix is a logarithmic depth buffer, which allocates precision by relative rather
+  // than absolute distance — it fixes this for ANY thin coplanar-ish geometry in the scene, not
+  // just the borough outline, and doesn't require guessing a "big enough" offset that might
+  // still fail at some distance.
+  renderer = new THREE.WebGLRenderer({antialias:true, logarithmicDepthBuffer:true});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   document.getElementById('canvasWrap').appendChild(renderer.domElement);
@@ -1193,7 +1284,7 @@ function initScene(){
   ground.position.y = -0.05;
   scene.add(ground);
 
-  scene.add(nearGroup, midGroup, farGroup, envelopeGroup, contextGroup);
+  scene.add(nearGroup, midGroup, farGroup, envelopeGroup, contextGroup, labelGroup);
 
   updateCameraPosition();
   window.addEventListener('resize', onResize);
@@ -1318,6 +1409,7 @@ function updateLOD(){
   nearGroup.visible = near;
   midGroup.visible = mid;
   farGroup.visible = !near && !mid;
+  labelGroup.visible = !near; // borough names are wayfinding context, not useful once you're in close on individual buildings
   document.getElementById('statusBar').textContent =
     `${currentRecords.length} lots · LOD: ${near?'near (full massing)':mid?'mid (block)':'far (dot)'} · dist ${d.toFixed(0)}`;
 }

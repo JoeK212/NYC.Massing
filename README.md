@@ -10,9 +10,10 @@ Joe.K · [axisbim.io](https://axisbim.io)
 
 ## Data
 
-- [MapPLUTO](https://data.cityofnewyork.us/City-Government/Primary-Land-Use-Tax-Lot-Output-Map-MapPLUTO-/f888-ni5f) — PLUTO attributes (zoning, FAR, land use, year built) + lot polygon geometry
-- [Building Footprints](https://data.cityofnewyork.us/City-Government/BUILDING/5zhs-2jue) — real building outline + real roof height, joined to MapPLUTO on `mpluto_bbl`
+- [PLUTO](https://data.cityofnewyork.us/City-Government/Primary-Land-Use-Tax-Lot-Output-Map-MapPLUTO-/64uk-42ks) — tabular PLUTO attributes (zoning, FAR, land use, year built, lot geometry), joined to Building Footprints on BBL. (MapPLUTO's `f888-ni5f` resource turned out to be a non-queryable Socrata Map asset, not a tabular one — this is the real resource the app queries.)
+- [Building Footprints](https://data.cityofnewyork.us/City-Government/BUILDING/5zhs-2jue) — real building outline + real roof height
+- [Borough Boundaries](https://data.cityofnewyork.us/City-Government/Borough-Boundaries/gthc-hcne) — the 5 borough context outlines and name labels
 
 ## Status
 
-v1.0.0 — initial build. Field names cross-checked against two live-fetched authoritative sources (NYC OTI's Building Footprints metadata, PLUTO's data dictionary) but not yet a live query response — see the `KNOWN GAP` note in `index.html`'s header comment. First real load should be checked against the actual API response before the data pipeline is trusted.
+v1.4.5 — live and deployed at [nycmassing.netlify.app](https://nycmassing.netlify.app). Since the initial build: fixed the real MapPLUTO data-source issue (switched to the tabular `64uk-42ks` PLUTO resource), added 3D navigation (orbit/pan/zoom, recenter, north compass, plan view), all 5 borough context outlines with name labels, a sky gradient with day/night theme toggle, discrete filter buckets for all three color modes with a Show all/Hide all shortcut, an in-app help modal, and a collision-aware zoom-in clamp that keeps the camera from ending up inside solid geometry. Full history in the `CHANGELOG` block at the top of `index.html`.
