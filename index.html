@@ -5,6 +5,21 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.2.3 - 2026-07-14 - Reported as "graphic shearing" on the borough outlines (screenshot showed
+    a large diagonal-hatched area where a filled borough shape should be) — traced to real NYC
+    coastline data coming back at absurd resolution for a context layer: Queens' main landmass
+    alone is 16,213 points, Brooklyn's is 12,829. Confirmed live that THREE.ShapeGeometry's
+    ear-clipping triangulator visibly breaks down at that density (the sliver/diagonal artifact
+    IS the triangulator failing, not a coordinate bug this time — the z-flip fix in v1.2.2 was
+    correct and unrelated). Verified the actual fix before shipping it, not just in theory: built
+    the same real Queens ring twice, side by side, at full 16,213-point resolution and decimated
+    to ~300 points, and confirmed the decimated version triangulates and renders cleanly while
+    full-resolution doesn't. Added decimateRing() (even-index-step sampling, not a true
+    Douglas-Peucker simplification — this is a low-detail reference/backdrop layer, exact
+    coastline fidelity isn't the point) applied inside allOuterRingsWorld so every consumer of
+    it (currently just the borough outlines) gets simplified rings automatically. Also a real
+    performance win, independent of the shearing fix: 117 outline parts at full resolution was
+    genuine unnecessary triangulation load for a context layer.
   v1.2.2 - 2026-07-14 - Reported as "the tan borough outline fill doesn't align with its own
     outline stroke" — turned out to be a much bigger, previously-hidden bug, found by tracing
     the actual rotation math rather than assuming the report was scoped to just the new outline
@@ -381,7 +396,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.2.2'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.2.3'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -659,7 +674,26 @@ function allOuterRingsWorld(geom){
   if(geom.type === 'Polygon') rings = [geom.coordinates];
   else if(geom.type === 'MultiPolygon') rings = geom.coordinates;
   else return [];
-  return rings.map(part => part[0].map(([lon,lat]) => projectLonLat(lon, lat))).filter(r => r.length >= 3);
+  return rings.map(part => decimateRing(part[0].map(([lon,lat]) => projectLonLat(lon, lat)), 300))
+    .filter(r => r.length >= 3);
+}
+
+// Real NYC borough coastline data comes back at absurd resolution for a context layer — one
+// borough's main landmass alone had 16,213 points. Confirmed live: THREE.ShapeGeometry's
+// ear-clipping triangulator visibly breaks down at that density (the "shearing" artifact —
+// diagonal sliver triangles instead of a clean fill), and a side-by-side render of the same
+// ring at full resolution vs. decimated to ~300 points confirmed the decimated version
+// triangulates cleanly. This is a reference/backdrop layer, not the data itself, so losing
+// fine coastline detail costs nothing that matters here — evenly-spaced index sampling (not a
+// true Douglas-Peucker simplification) is enough, and cheap.
+function decimateRing(ring, maxPoints){
+  if(ring.length <= maxPoints) return ring;
+  const step = Math.max(1, Math.floor(ring.length / maxPoints));
+  const out = [];
+  for(let i=0; i<ring.length; i+=step) out.push(ring[i]);
+  const last = ring[ring.length-1];
+  if(out[out.length-1] !== last) out.push(last);
+  return out;
 }
 
 // NORTH ORIENTATION — worked through explicitly rather than asserted, since this project has
