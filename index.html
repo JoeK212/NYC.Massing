@@ -5,6 +5,27 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.2.4 - 2026-07-14 - Two more real bugs found live. (1) "Graphic shear still an issue" after
+    v1.2.3's decimation fix — confirmed the deployed site really was already v1.2.3, so this
+    wasn't a stale-cache report. Ran a real self-intersection test against every decimated ring
+    actually in the scene: 8 parts across every borough (including Manhattan) now self-
+    intersected AFTER decimation even though none of them did in the original source geometry —
+    naive even-step point sampling on a real wiggly coastline can create new crossings that
+    weren't there before, and ShapeGeometry's triangulator has no defense against that. This is
+    the second distinct way the filled borough-outline mesh has broken (v1.2.2: mirrored;
+    v1.2.3: sheared even after mitigation) — per this project's own standing lesson about not
+    re-patching a mechanism that keeps failing, the fill is removed entirely rather than tuned
+    further. The stroke (plain connected line segments, never triangulated) carries all the
+    information that actually mattered and structurally cannot have this bug class. (2) "Right-
+    click feels like it's zooming, hard to navigate" — confirmed live this was never actually
+    triggering zoom (camDist stayed exactly fixed through a real synthetic right-drag test); it
+    was pan, but vertical drag moved camTarget.y in raw world space regardless of camera angle —
+    at a typical zoomed-out distance a 100px drag moved the target 126 world units straight up,
+    which reads as the camera rocketing into the sky and is visually indistinguishable from
+    zooming out. Fixed by deriving the camera's actual view-plane "up" direction from the
+    spherical parametrization (matches what camera.lookAt() computes internally) instead of
+    assuming world-Y — reduces to plain vertical panning at low camera angles (unchanged feel for
+    the common case) and correctly becomes ground-plane movement at steep angles like Plan View.
   v1.2.3 - 2026-07-14 - Reported as "graphic shearing" on the borough outlines (screenshot showed
     a large diagonal-hatched area where a filled borough shape should be) — traced to real NYC
     coastline data coming back at absurd resolution for a context layer: Queens' main landmass
@@ -396,7 +417,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.2.3'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.2.4'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -621,18 +642,23 @@ async function loadBoroughOutlines(){
   }
 }
 function addBoroughOutlineMeshes(rings, label){
+  // v1.2.4: the filled ShapeGeometry wash is gone. Two rounds of trying to make real NYC
+  // coastline data triangulate cleanly both failed for the same underlying reason — even after
+  // decimating to ~300 points (v1.2.3), naive even-step sampling on a real wiggly coastline can
+  // introduce NEW self-intersections that weren't in the source geometry (confirmed live: 8 of
+  // the decimated ring parts, across every borough including Manhattan, self-intersect after
+  // decimation even though none of them do before it). A true topology-preserving simplifier
+  // would fix this properly, but that's real added complexity for what is a low-value backdrop
+  // wash, not the data itself. The stroke below carries 100% of the information that matters
+  // (the boundary shape) and structurally cannot have this bug class — it's drawn as connected
+  // line segments, never triangulated. Matches the project's own standing lesson: after a
+  // mechanism breaks the same way twice, stop re-patching it and reconsider the design instead.
   for(const ring of rings){
-    const shape = ringToShape(ring);
-    const geo = new THREE.ShapeGeometry(shape);
-    geo.rotateX(-Math.PI/2);
-    geo.translate(0, -0.02, 0); // just under the lot/vacant-marker layer
-    const mat = new THREE.MeshBasicMaterial({color: 0xB8AD91, transparent:true, opacity:0.22, side:THREE.DoubleSide, depthWrite:false});
-    contextGroup.add(new THREE.Mesh(geo, mat));
     const pts3d = ring.map(([x,z]) => new THREE.Vector3(x, -0.01, z));
     pts3d.push(pts3d[0]);
     const lineGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
-    lineGeo.computeBoundingSphere(); // same raw-BufferGeometry gap as buildFarPoints — fixed here too
-    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x8C8264, transparent:true, opacity:0.4})));
+    lineGeo.computeBoundingSphere();
+    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x9C917A, transparent:true, opacity:0.55})));
   }
 }
 
@@ -931,8 +957,21 @@ function wireOrbitControls(){
     if(panning){
       const panScale = camDist * 0.0018;
       const right = new THREE.Vector3(Math.cos(camAzimuth), 0, -Math.sin(camAzimuth));
+      // Camera-relative "up" (NOT world Y) — derived from camera.lookAt()'s own math with
+      // up=(0,1,0): the component of world-up perpendicular to the view direction, for this
+      // spherical parametrization. At elevation=0 this reduces to plain world-up (0,1,0), so
+      // horizontal-camera panning is unchanged; at higher elevation (e.g. Plan View) it
+      // correctly becomes a horizontal ground-plane direction instead of straight up. Confirmed
+      // live this was the actual bug: raw world-Y panning moved camTarget.y by 126 units from a
+      // 100px drag at typical zoom — the camera rocketing into the sky reads as "feels like
+      // zooming," not panning, which is exactly what was reported.
+      const up = new THREE.Vector3(
+        -Math.sin(camElevation) * Math.sin(camAzimuth),
+        Math.cos(camElevation),
+        -Math.sin(camElevation) * Math.cos(camAzimuth)
+      );
       camTarget.addScaledVector(right, -dx*panScale);
-      camTarget.y += dy*panScale;
+      camTarget.addScaledVector(up, dy*panScale);
     } else {
       camAzimuth -= dx * 0.006;
       camElevation = Math.max(0.08, Math.min(1.5, camElevation + dy * 0.006));
