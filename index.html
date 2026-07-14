@@ -5,6 +5,17 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.1.0 - 2026-07-14 - Camera controls overhaul, requested after the data pipeline fix made it
+    possible to actually see and try to navigate a real 15,000-lot borough. Added: pinch-to-zoom
+    via tracked multi-pointer distance (the old controls only handled mouse wheel + single-pointer
+    drag — Pointer Events cover single-finger touch drag for free, but never handled a second
+    finger, a real mobile gap); a Recenter button that smoothly tweens camera azimuth/elevation/
+    distance/target back to the initial view (shortestAngleDelta() avoids spinning the long way
+    around); a north-compass dial (click resets azimuth to 0/north-up, same smooth tween, needle
+    rotates live each frame to reflect current heading — cosmetic, consistent with the app's
+    already-approximate equirectangular projection, not a surveyed bearing); and dedicated +/−
+    zoom buttons for anyone who doesn't want to fight the wheel/pinch gesture. Any manual pointer
+    input cancels an in-flight tween so it never fights the user mid-animation.
   v1.0.3 - 2026-07-14 - Real root cause of the persistent 403, found live via Claude in Chrome
     against the deployed nycmassing.netlify.app (not file://, ruling out the origin theory from
     v1.0.2): MapPLUTO (f888-ni5f) is a Socrata "non-tabular" Map asset — its /resource/{id}.json
@@ -156,6 +167,31 @@
     background:var(--card); border:1.5px solid var(--line); border-radius:6px; padding:6px 10px;
   }
 
+  #navControls{
+    position:fixed; right:16px; bottom:calc(320px + env(safe-area-inset-bottom)); z-index:22;
+    display:flex; flex-direction:column; align-items:center; gap:8px;
+  }
+  #compassDial{
+    width:52px; height:52px; padding:0; border-radius:50%;
+    background:var(--card); border:1.5px solid var(--line); box-shadow:var(--shadow);
+    display:flex; align-items:center; justify-content:center;
+  }
+  #compassDial:active{background:var(--paper-deep);}
+  #compassSvg{width:38px; height:38px;}
+  .compassRing{fill:none; stroke:var(--line); stroke-width:1;}
+  .compassN{fill:var(--warn);}
+  .compassS{fill:var(--ink-soft); opacity:0.5;}
+  .compassLabel{font-family:var(--font-ui); font-size:7px; font-weight:700; fill:var(--ink-soft);}
+  #compassNeedle{transform-origin:20px 20px; transition:none;}
+  .navBtn{
+    font-family:var(--font-ui); font-weight:600; font-size:11.5px;
+    background:var(--card); color:var(--ink); border:1.5px solid var(--line);
+    border-radius:16px; padding:7px 12px; box-shadow:var(--shadow); white-space:nowrap;
+  }
+  .navBtn.round{width:32px; height:32px; padding:0; border-radius:50%; font-size:16px; line-height:1;}
+  .zoomCluster{display:flex; flex-direction:column; gap:4px; background:var(--card); border:1.5px solid var(--line); border-radius:20px; padding:4px; box-shadow:var(--shadow);}
+  .zoomCluster .navBtn{border:none; box-shadow:none; background:transparent;}
+
   #inspectPanel{
     position:fixed; bottom:calc(14px + env(safe-area-inset-bottom)); right:16px; z-index:25;
     width:260px; display:none;
@@ -239,6 +275,24 @@
 
 <div id="statusBar">loading…</div>
 
+<div id="navControls">
+  <button id="compassDial" aria-label="Reset to north-up (click), drag to rotate">
+    <svg viewBox="0 0 40 40" id="compassSvg">
+      <circle cx="20" cy="20" r="18" class="compassRing"/>
+      <g id="compassNeedle">
+        <path d="M20 5 L24 20 L20 17 L16 20 Z" class="compassN"/>
+        <path d="M20 35 L24 20 L20 23 L16 20 Z" class="compassS"/>
+      </g>
+      <text x="20" y="12" class="compassLabel" text-anchor="middle">N</text>
+    </svg>
+  </button>
+  <button class="btn secondary navBtn" id="recenterBtn" title="Recenter view">⤾ Recenter</button>
+  <div class="zoomCluster">
+    <button class="navBtn round" id="zoomInBtn" aria-label="Zoom in">+</button>
+    <button class="navBtn round" id="zoomOutBtn" aria-label="Zoom out">−</button>
+  </div>
+</div>
+
 <div id="inspectPanel" class="panel">
   <h3 id="inspectAddr">—</h3>
   <div class="row"><span>BBL</span><span id="inspectBBL">—</span></div>
@@ -260,7 +314,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.0.3'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.1.0'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -532,12 +586,51 @@ function colorForLot(lot, mode){
 
 /* ================= Three.js scene ================= */
 let scene, camera, renderer;
-let camDist = 60, camAzimuth = 0.9, camElevation = 0.55;
+const INITIAL_CAM = {azimuth: 0.9, elevation: 0.55, dist: 60};
+let camDist = INITIAL_CAM.dist, camAzimuth = INITIAL_CAM.azimuth, camElevation = INITIAL_CAM.elevation;
 let camTarget = new THREE.Vector3(0,0,0);
 let colorMode = 'landuse';
 let showEnvelope = false;
 let currentRecords = [];
 const hiddenCategories = new Set();
+
+// Smooth camera tween — used by Recenter and the north-compass reset so both feel like
+// deliberate moves instead of an instant snap. shortestAngleDelta() avoids spinning the
+// long way around when animating azimuth back toward north.
+let camTween = null;
+function shortestAngleDelta(from, to){
+  let d = (to - from) % (Math.PI*2);
+  if(d > Math.PI) d -= Math.PI*2;
+  if(d < -Math.PI) d += Math.PI*2;
+  return d;
+}
+function easeInOutCubic(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2; }
+function animateCameraTo({azimuth, elevation, dist, target}, duration=650){
+  camTween = {
+    fromAz: camAzimuth, toAz: camAzimuth + shortestAngleDelta(camAzimuth, azimuth),
+    fromEl: camElevation, toEl: elevation,
+    fromDist: camDist, toDist: dist,
+    fromTarget: camTarget.clone(), toTarget: target.clone(),
+    start: performance.now(), duration
+  };
+}
+function stepCameraTween(now){
+  if(!camTween) return false;
+  const t = Math.min(1, (now - camTween.start) / camTween.duration);
+  const e = easeInOutCubic(t);
+  camAzimuth = camTween.fromAz + (camTween.toAz - camTween.fromAz) * e;
+  camElevation = camTween.fromEl + (camTween.toEl - camTween.fromEl) * e;
+  camDist = camTween.fromDist + (camTween.toDist - camTween.fromDist) * e;
+  camTarget.lerpVectors(camTween.fromTarget, camTween.toTarget, e);
+  if(t >= 1) camTween = null;
+  return true;
+}
+function recenterView(){
+  animateCameraTo({azimuth: INITIAL_CAM.azimuth, elevation: INITIAL_CAM.elevation, dist: INITIAL_CAM.dist, target: new THREE.Vector3(0,0,0)});
+}
+function resetToNorth(){
+  animateCameraTo({azimuth: 0, elevation: camElevation, dist: camDist, target: camTarget});
+}
 
 const nearGroup = new THREE.Group();   // full extrusion + floor lines
 const midGroup = new THREE.Group();    // bounding-box prism
@@ -593,16 +686,40 @@ function updateCameraPosition(){
   camera.lookAt(camTarget);
 }
 
-/* ---- custom orbit controls: drag to rotate, wheel to zoom, shift-drag to pan ---- */
+/* ---- custom orbit controls: drag to rotate, wheel to zoom, shift-drag to pan, pinch to zoom ---- */
 function wireOrbitControls(){
   const dom = renderer.domElement;
   let dragging = false, panning = false, lastX=0, lastY=0;
+  const activePointers = new Map();
+  let pinchStartDist = null, pinchStartCamDist = null;
+
+  function cancelTween(){ camTween = null; } // any manual input interrupts an in-flight recenter/north-reset
+
   dom.addEventListener('pointerdown', (e)=>{
-    dragging = true; panning = e.shiftKey || e.button === 2;
-    lastX = e.clientX; lastY = e.clientY;
+    cancelTween();
+    activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
     dom.setPointerCapture(e.pointerId);
+    if(activePointers.size >= 2){
+      dragging = false;
+      const pts = [...activePointers.values()];
+      pinchStartDist = Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
+      pinchStartCamDist = camDist;
+    } else {
+      dragging = true; panning = e.shiftKey || e.button === 2;
+      lastX = e.clientX; lastY = e.clientY;
+    }
   });
   dom.addEventListener('pointermove', (e)=>{
+    if(activePointers.has(e.pointerId)) activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+
+    if(activePointers.size >= 2 && pinchStartDist){
+      const pts = [...activePointers.values()];
+      const dist = Math.max(1, Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y));
+      camDist = Math.max(1.5, Math.min(1400, pinchStartCamDist * (pinchStartDist/dist)));
+      updateCameraPosition();
+      updateLOD();
+      return;
+    }
     if(!dragging) return;
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
@@ -617,9 +734,16 @@ function wireOrbitControls(){
     }
     updateCameraPosition();
   });
-  window.addEventListener('pointerup', ()=>{ dragging=false; });
+  function releasePointer(e){
+    activePointers.delete(e.pointerId);
+    if(activePointers.size < 2) pinchStartDist = null;
+    dragging = activePointers.size === 1;
+  }
+  window.addEventListener('pointerup', releasePointer);
+  window.addEventListener('pointercancel', releasePointer);
   dom.addEventListener('wheel', (e)=>{
     e.preventDefault();
+    cancelTween();
     camDist = Math.max(1.5, Math.min(1400, camDist * (1 + e.deltaY*0.0012)));
     updateCameraPosition();
     updateLOD();
@@ -627,8 +751,13 @@ function wireOrbitControls(){
   dom.addEventListener('contextmenu', (e)=>e.preventDefault());
 }
 
-function animate(){
+function animate(now){
   requestAnimationFrame(animate);
+  if(stepCameraTween(now || performance.now())){
+    updateCameraPosition();
+    updateLOD();
+  }
+  updateCompass();
   renderer.render(scene, camera);
 }
 
@@ -863,6 +992,27 @@ function showInspectRecord(rec){
   const util = farUtilization(lot);
   document.getElementById('farBarFill').style.width = util === null ? '0%' : `${Math.min(115, util*100)}%`;
 }
+
+/* ================= Nav controls: compass, recenter, zoom buttons ================= */
+// Cosmetic approximation, consistent with the app's existing note that its projection isn't
+// true State Plane — the needle rotates with camAzimuth so it reads as "which way you're
+// facing" rather than a surveyed bearing. Click resets to north-up (azimuth 0).
+function updateCompass(){
+  const needle = document.getElementById('compassNeedle');
+  if(needle) needle.style.transform = `rotate(${-camAzimuth * 180/Math.PI}deg)`;
+}
+document.getElementById('compassDial').addEventListener('click', resetToNorth);
+document.getElementById('recenterBtn').addEventListener('click', recenterView);
+document.getElementById('zoomInBtn').addEventListener('click', ()=>{
+  camTween = null;
+  camDist = Math.max(1.5, camDist * 0.72);
+  updateCameraPosition(); updateLOD();
+});
+document.getElementById('zoomOutBtn').addEventListener('click', ()=>{
+  camTween = null;
+  camDist = Math.min(1400, camDist * 1.38);
+  updateCameraPosition(); updateLOD();
+});
 
 /* ================= UI wiring ================= */
 function updateLegend(){
