@@ -5,6 +5,18 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.2.5 - 2026-07-14 - Two reports that turned out to be the same root cause. (1) "Ghosting when
+    zooming far" (screenshot at dist 758) and (2) "the initial view should start zoomed out to
+    see context" pull in opposite directions unless fixed together: the fog range (near=120,
+    far=900, tuned for the old dist=60 default) put the reported ghosting distance at 82% faded
+    toward the background color — confirmed with the actual fog interpolation math, not a guess
+    — meaning dots weren't rendering faint due to a bug, they were being fogged almost entirely
+    away. Pulling the default view back to dist=750 (per request 2, roughly matching the zoom
+    level the "ghosting" screenshot was already at, since that framing itself was the right call)
+    would have made the SAME wash-out the permanent default state instead of an edge case. Fixed
+    both together: widened fog to near=1200/far=3200 (0% fog at the new dist=750 default, only
+    10% even at the 1400 max-zoom-out clamp) and changed INITIAL_CAM.dist from 60 to 750.
+    Confirmed live: fog factor at the new default distance dropped from 0.82 to 0 before shipping.
   v1.2.4 - 2026-07-14 - Two more real bugs found live. (1) "Graphic shear still an issue" after
     v1.2.3's decimation fix — confirmed the deployed site really was already v1.2.3, so this
     wasn't a stale-cache report. Ran a real self-intersection test against every decimated ring
@@ -417,7 +429,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.2.4'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.2.5'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -785,7 +797,7 @@ function colorForLot(lot, mode){
 
 /* ================= Three.js scene ================= */
 let scene, camera, renderer;
-const INITIAL_CAM = {azimuth: 0.9, elevation: 0.55, dist: 60};
+const INITIAL_CAM = {azimuth: 0.9, elevation: 0.55, dist: 750};
 let camDist = INITIAL_CAM.dist, camAzimuth = INITIAL_CAM.azimuth, camElevation = INITIAL_CAM.elevation;
 let camTarget = new THREE.Vector3(0,0,0);
 let colorMode = 'landuse';
@@ -868,7 +880,7 @@ const MID_MAX_DIST = 55;
 function initScene(){
   scene = new THREE.Scene();
   scene.background = new THREE.Color(currentTheme() === 'dark' ? 0x14171B : 0xEDEAE0);
-  scene.fog = new THREE.Fog(scene.background.getHex(), 120, 900);
+  scene.fog = new THREE.Fog(scene.background.getHex(), 1200, 3200);
   camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 4000);
   renderer = new THREE.WebGLRenderer({antialias:true});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
