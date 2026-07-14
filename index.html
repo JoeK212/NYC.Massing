@@ -5,6 +5,19 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.3 - 2026-07-14 - Reported the zoom-in limit and "nav gets stuck/jammed, can't pan" were
+    still issues after v1.4.1. Confirmed live: v1.4.1's lower MIN_CAM_DIST (0.35 = 17.5ft) let
+    the camera end up INSIDE a building's extruded volume — real NYC footprints are routinely
+    wider than that. MeshLambertMaterial defaults to FrontSide, so every surrounding face was a
+    backface from inside (invisible); the canvas measured 0% non-black pixels (verified via
+    canvas.toDataURL + a manual pixel scan — gl.readPixels gave false readings from a
+    since-cleared buffer). That's the "stuck" feeling: panning inside a solid box changes the
+    camera state but has no visible reference point in any direction to prove it. A fixed
+    MIN_CAM_DIST can't solve this on its own since it's distance-from-target, not
+    distance-from-surface. Added clampZoomIn(): a raycast from camTarget toward the camera on
+    every zoom-in step that never lets camDist cross the nearest real surface (minus a small
+    buffer), falling back to MIN_CAM_DIST only where there's nothing nearby to hit. Also made
+    building/ground materials double-sided as a defense-in-depth backstop.
   v1.4.2 - 2026-07-14 - Reported the default Recenter view "doesn't make sense" — Manhattan
     should read north-south, not viewed from the east side. INITIAL_CAM.azimuth was 0.9 rad
     (~52°), putting the camera southeast of the target and viewing the island across its short
@@ -582,7 +595,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.2'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.3'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1118,6 +1131,41 @@ function applySkyBackground(){
   else scene.fog.color.setHex(horizonHex);
 }
 
+// v1.4.3: reported the zoom-in "limit" and "nav gets stuck/jammed, can't pan" persisted after
+// v1.4.1's lower MIN_CAM_DIST. Confirmed live: at the new closer floor the camera can end up
+// INSIDE a building's extruded volume (0.35 world units = 17.5ft, well within a typical NYC
+// footprint's half-width). MeshLambertMaterial defaults to FrontSide, so every surrounding
+// face is a backface from inside — invisible — and the canvas measured genuinely 0% non-black
+// pixels (verified via canvas.toDataURL + pixel scan, not the flakier gl.readPixels which can
+// read a cleared buffer). That's the "stuck" feeling: panning/rotating inside a solid box has
+// no visible reference point in any direction, even though the camera state is actually
+// changing. MIN_CAM_DIST alone can't fix this — it's a fixed distance from camTarget, not a
+// distance from the nearest surface, so any real building bigger than the floor can still
+// swallow the camera. Fixed with a raycast collision clamp: cast a ray from camTarget out
+// toward the camera on every zoom-in step and never let camDist pass the nearest hit (minus a
+// small buffer), falling back to MIN_CAM_DIST only in open areas with nothing to hit.
+const camRaycaster = new THREE.Raycaster();
+const ZOOM_SURFACE_BUFFER = 0.15; // stop just short of the surface, not flush against it
+function nearestSurfaceDistFromTarget(){
+  const dir = new THREE.Vector3(
+    Math.cos(camElevation) * Math.sin(camAzimuth),
+    Math.sin(camElevation),
+    Math.cos(camElevation) * Math.cos(camAzimuth)
+  );
+  // start the ray a hair off the target so a hit exactly at the target (camTarget sitting on a
+  // building's own surface, the common case) doesn't immediately self-intersect at t=0
+  camRaycaster.set(camTarget.clone().addScaledVector(dir, ZOOM_SURFACE_BUFFER), dir);
+  camRaycaster.far = MAX_CAM_DIST;
+  const hits = camRaycaster.intersectObjects(nearGroup.children, false);
+  return hits.length ? hits[0].distance + ZOOM_SURFACE_BUFFER : null;
+}
+function clampZoomIn(newDist){
+  if(newDist >= camDist) return newDist; // zooming out or unchanged — geometry can't be a problem
+  const surfaceDist = nearestSurfaceDistFromTarget();
+  if(surfaceDist !== null) return Math.max(MIN_CAM_DIST, Math.min(newDist, surfaceDist));
+  return newDist; // nothing nearby (open area) — MIN_CAM_DIST alone governs
+}
+
 function initScene(){
   scene = new THREE.Scene();
   applySkyBackground();
@@ -1135,7 +1183,11 @@ function initScene(){
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(4000, 4000),
-    new THREE.MeshBasicMaterial({color: currentTheme() === 'dark' ? 0x1B1F25 : 0xE1DBC7})
+    // DoubleSide is defense-in-depth for the same v1.4.3 issue as nearGroup below: if the
+    // camera ever ends up below grade (e.g. a future camera bug), FrontSide would render the
+    // ground invisible from underneath instead of the visible surface, compounding a black-out
+    // rather than giving a recognizable (if upside-down-looking) reference.
+    new THREE.MeshBasicMaterial({color: currentTheme() === 'dark' ? 0x1B1F25 : 0xE1DBC7, side: THREE.DoubleSide})
   );
   ground.rotation.x = -Math.PI/2;
   ground.position.y = -0.05;
@@ -1198,7 +1250,7 @@ function wireOrbitControls(){
     if(activePointers.size >= 2 && pinchStartDist){
       const pts = [...activePointers.values()];
       const dist = Math.max(1, Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y));
-      camDist = Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, pinchStartCamDist * (pinchStartDist/dist)));
+      camDist = clampZoomIn(Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, pinchStartCamDist * (pinchStartDist/dist))));
       updateCameraPosition();
       updateLOD();
       return;
@@ -1240,7 +1292,7 @@ function wireOrbitControls(){
   dom.addEventListener('wheel', (e)=>{
     e.preventDefault();
     cancelTween();
-    camDist = Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, camDist * (1 + e.deltaY*0.0012)));
+    camDist = clampZoomIn(Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, camDist * (1 + e.deltaY*0.0012))));
     updateCameraPosition();
     updateLOD();
   }, {passive:false});
@@ -1355,7 +1407,10 @@ function addNearMesh(ring, heightFt, color, lot, isVacant=false){
   const depth = ftToWorld(heightFt);
   const geo = new THREE.ExtrudeGeometry(shape, {depth, bevelEnabled:false, steps:1});
   geo.rotateX(-Math.PI/2);
-  const mat = new THREE.MeshLambertMaterial({color, transparent:isVacant, opacity:isVacant?0.35:1});
+  // v1.4.3: DoubleSide backstop — clampZoomIn() is the real fix (keeps the camera from
+  // crossing the surface at all), but rendering both faces means a grazing pass or an edge
+  // case the raycast misses still shows a color instead of collapsing to pure black.
+  const mat = new THREE.MeshLambertMaterial({color, transparent:isVacant, opacity:isVacant?0.35:1, side: THREE.DoubleSide});
   const mesh = new THREE.Mesh(geo, mat);
   nearGroup.add(mesh);
 
@@ -1388,7 +1443,7 @@ function addMidMesh(ring, heightFt, color){
   ring.forEach(([x,z])=>{ minX=Math.min(minX,x); maxX=Math.max(maxX,x); minZ=Math.min(minZ,z); maxZ=Math.max(maxZ,z); });
   const w = Math.max(0.02, maxX-minX), d = Math.max(0.02, maxZ-minZ), h = ftToWorld(heightFt);
   const geo = new THREE.BoxGeometry(w, h, d);
-  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({color}));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({color, side: THREE.DoubleSide}));
   mesh.position.set((minX+maxX)/2, h/2, (minZ+maxZ)/2);
   midGroup.add(mesh);
 }
@@ -1515,7 +1570,7 @@ document.getElementById('recenterBtn').addEventListener('click', recenterView);
 document.getElementById('planViewBtn').addEventListener('click', togglePlanView);
 document.getElementById('zoomInBtn').addEventListener('click', ()=>{
   camTween = null;
-  camDist = Math.max(MIN_CAM_DIST, camDist * 0.72);
+  camDist = clampZoomIn(Math.max(MIN_CAM_DIST, camDist * 0.72));
   updateCameraPosition(); updateLOD();
 });
 document.getElementById('zoomOutBtn').addEventListener('click', ()=>{
