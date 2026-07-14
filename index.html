@@ -5,6 +5,11 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.2 - 2026-07-14 - Reported the default Recenter view "doesn't make sense" — Manhattan
+    should read north-south, not viewed from the east side. INITIAL_CAM.azimuth was 0.9 rad
+    (~52°), putting the camera southeast of the target and viewing the island across its short
+    axis. Changed to azimuth=0 (camera due south of target, facing north) for a sensible
+    north-up default on Recenter and initial load.
   v1.4.1 - 2026-07-14 - Reported "limit on how far you can zoom in" and "pan feels broken"
     navigating close. Confirmed live in Chrome: rotate worked fine at any zoom, but the zoom-in
     floor (hardcoded 1.5 world units = 75ft, given FEET_PER_WORLD_UNIT=50, in three separate
@@ -577,7 +582,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.1'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.2'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -980,7 +985,14 @@ function yearEraSwatch(key){
 
 /* ================= Three.js scene ================= */
 let scene, camera, renderer;
-const INITIAL_CAM = {azimuth: 0.9, elevation: 0.55, dist: 750};
+// v1.4.2: reported Recenter's default view doesn't make sense — Manhattan (and the other
+// boroughs) run roughly north-south, but azimuth=0.9 rad (~52°) put the camera southeast of
+// the target, viewing the island across its short axis from the side rather than along its
+// length. azimuth=0 puts the camera due south of the target looking north (per the
+// camera-position formula below: x=camTarget.x+dist*cos(el)*sin(az), z=camTarget.z+
+// dist*cos(el)*cos(az) — at az=0, sin=0/cos=1, so the camera sits at larger Z, i.e. south,
+// facing north), which reads as a sensible north-up default instead of an arbitrary diagonal.
+const INITIAL_CAM = {azimuth: 0, elevation: 0.55, dist: 750};
 let camDist = INITIAL_CAM.dist, camAzimuth = INITIAL_CAM.azimuth, camElevation = INITIAL_CAM.elevation;
 let camTarget = new THREE.Vector3(0,0,0);
 let colorMode = 'landuse';
