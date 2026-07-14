@@ -5,6 +5,16 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.1 - 2026-07-14 - Reported "limit on how far you can zoom in" and "pan feels broken"
+    navigating close. Confirmed live in Chrome: rotate worked fine at any zoom, but the zoom-in
+    floor (hardcoded 1.5 world units = 75ft, given FEET_PER_WORLD_UNIT=50, in three separate
+    clamp sites) stopped well short of a useful facade-inspection distance, and panScale
+    (camDist*0.0018, no floor) meant a full-screen drag near that floor moved the target only a
+    few feet — imperceptible, reading as broken rather than slow. Lowered the zoom-in floor to
+    0.35 (17.5ft, safe against the camera's 0.1 near-clip plane) and consolidated all four zoom
+    clamp sites (wheel, pinch, +/- buttons) onto named MIN_CAM_DIST/MAX_CAM_DIST constants.
+    Added a PAN_MIN_DIST=3 floor under panScale's effective distance so close-in panning stays
+    responsive instead of degrading toward zero as camDist shrinks.
   v1.4.0 - 2026-07-14 - Two requests. (1) Day mode too bright — the flat solid-color background
     read as harsh against a full-bleed canvas with no other texture. Replaced with a small
     canvas-generated vertical gradient (soft pale blue zenith fading to the existing cream near
@@ -567,7 +577,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.0'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.1'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1050,6 +1060,19 @@ let farPoints = null, farPointRecords = [];
 const NEAR_MAX_DIST = 14;
 const MID_MAX_DIST = 55;
 
+// v1.4.1: reported "limit on how far you can zoom in" + "pan feels broken" when navigating
+// close. Root cause of the zoom limit: the zoom-in floor was hardcoded to 1.5 (=75ft, given
+// FEET_PER_WORLD_UNIT=50) in three separate places (wheel, pinch, zoom buttons) — too far to
+// inspect a single building's facade. Lowered to 0.35 (=17.5ft), safe against the camera's
+// near-clip plane of 0.1. Root cause of the pan complaint: panScale was a flat camDist*0.0018
+// with no floor, so as camDist approached the old 1.5 minimum, a full-screen drag moved the
+// target only a few feet — reads as "not working" rather than "just slow". PAN_MIN_DIST puts a
+// floor under the effective distance used for pan speed so close-in panning stays usable even
+// as the true zoom minimum drops.
+const MIN_CAM_DIST = 0.35;
+const MAX_CAM_DIST = 1400;
+const PAN_MIN_DIST = 3;
+
 // A flat solid-color background reads as noticeably harsh/bright in day mode against a full-
 // bleed canvas with no other visual texture. Building a small vertical-gradient canvas texture
 // instead of a THREE.Color — same trick used for a sky dome in far cheaper form, since this is
@@ -1163,7 +1186,7 @@ function wireOrbitControls(){
     if(activePointers.size >= 2 && pinchStartDist){
       const pts = [...activePointers.values()];
       const dist = Math.max(1, Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y));
-      camDist = Math.max(1.5, Math.min(1400, pinchStartCamDist * (pinchStartDist/dist)));
+      camDist = Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, pinchStartCamDist * (pinchStartDist/dist)));
       updateCameraPosition();
       updateLOD();
       return;
@@ -1172,7 +1195,7 @@ function wireOrbitControls(){
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
     if(panning){
-      const panScale = camDist * 0.0018;
+      const panScale = Math.max(camDist, PAN_MIN_DIST) * 0.0018;
       const right = new THREE.Vector3(Math.cos(camAzimuth), 0, -Math.sin(camAzimuth));
       // Camera-relative "up" (NOT world Y) — derived from camera.lookAt()'s own math with
       // up=(0,1,0): the component of world-up perpendicular to the view direction, for this
@@ -1205,7 +1228,7 @@ function wireOrbitControls(){
   dom.addEventListener('wheel', (e)=>{
     e.preventDefault();
     cancelTween();
-    camDist = Math.max(1.5, Math.min(1400, camDist * (1 + e.deltaY*0.0012)));
+    camDist = Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, camDist * (1 + e.deltaY*0.0012)));
     updateCameraPosition();
     updateLOD();
   }, {passive:false});
@@ -1480,12 +1503,12 @@ document.getElementById('recenterBtn').addEventListener('click', recenterView);
 document.getElementById('planViewBtn').addEventListener('click', togglePlanView);
 document.getElementById('zoomInBtn').addEventListener('click', ()=>{
   camTween = null;
-  camDist = Math.max(1.5, camDist * 0.72);
+  camDist = Math.max(MIN_CAM_DIST, camDist * 0.72);
   updateCameraPosition(); updateLOD();
 });
 document.getElementById('zoomOutBtn').addEventListener('click', ()=>{
   camTween = null;
-  camDist = Math.min(1400, camDist * 1.38);
+  camDist = Math.min(MAX_CAM_DIST, camDist * 1.38);
   updateCameraPosition(); updateLOD();
 });
 
