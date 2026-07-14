@@ -5,6 +5,23 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.2.0 - 2026-07-14 - Three requests after the controls landed: (1) Plan View — a straight-
+    down toggle button, reusing the same camera-tween mechanism as Recenter, capped at 89.1
+    degrees rather than a true 90 to avoid the standard lookAt() gimbal-lock singularity at the
+    pole. (2) True north — this was already correct, but only by derivation, not by explicit
+    proof anywhere in the file; added a NORTH ORIENTATION comment next to allOuterRingsWorld
+    walking through exactly why azimuth=0 means facing geographic north given this app's
+    projection sign convention, since this project has already been burned twice by confident-
+    but-unverified claims and a bare assertion wasn't good enough here either. Plan View and the
+    compass both depend on that derivation being right. (3) Five-borough context outlines —
+    added via a new Socrata resource (gthc-hcne, Borough Boundaries), fetched once on boot,
+    independent of the per-borough lot data. Flagged plainly: this resource is NOT live-verified
+    as of this edit — its NYC Open Data page shows the same "redirected to Carto" export
+    language MapPLUTO's page showed before it turned out to be a non-tabular dead end, which is
+    a real risk signal, not a confirmed one. Fetches with no $select clause specifically so a
+    wrong guessed field name can't hard-error the request the way mpluto_bbl did earlier — reads
+    whatever keys actually come back. Fails soft: a broken outline fetch logs a warning and
+    leaves the rest of the app untouched, it doesn't take anything else down.
   v1.1.0 - 2026-07-14 - Camera controls overhaul, requested after the data pipeline fix made it
     possible to actually see and try to navigate a real 15,000-lot borough. Added: pinch-to-zoom
     via tracked multi-pointer distance (the old controls only handled mouse wheel + single-pointer
@@ -189,6 +206,7 @@
     border-radius:16px; padding:7px 12px; box-shadow:var(--shadow); white-space:nowrap;
   }
   .navBtn.round{width:32px; height:32px; padding:0; border-radius:50%; font-size:16px; line-height:1;}
+  .navBtn.active{background:var(--ink); color:var(--paper); border-color:var(--ink);}
   .zoomCluster{display:flex; flex-direction:column; gap:4px; background:var(--card); border:1.5px solid var(--line); border-radius:20px; padding:4px; box-shadow:var(--shadow);}
   .zoomCluster .navBtn{border:none; box-shadow:none; background:transparent;}
 
@@ -287,6 +305,7 @@
     </svg>
   </button>
   <button class="btn secondary navBtn" id="recenterBtn" title="Recenter view">⤾ Recenter</button>
+  <button class="btn secondary navBtn" id="planViewBtn" title="Toggle straight-down plan view">◱ Plan View</button>
   <div class="zoomCluster">
     <button class="navBtn round" id="zoomInBtn" aria-label="Zoom in">+</button>
     <button class="navBtn round" id="zoomOutBtn" aria-label="Zoom out">−</button>
@@ -314,7 +333,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.1.0'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.2.0'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -507,7 +526,53 @@ async function loadBoroughData(boroDigit){
   return records;
 }
 
-/* ================= Projection ================= */
+/* ================= Borough context outlines (all 5 boroughs, fetched once) =================
+   UNVERIFIED LIVE as of this edit — flagging explicitly rather than asserting confidence,
+   given this exact project already got burned twice by trusting an untested resource
+   (MapPLUTO's f888-ni5f "non-tabular" 403, and Building Footprints' doc-vs-real field names).
+   gthc-hcne's own NYC Open Data page shows the same "redirected to Carto" export language
+   MapPLUTO's page showed, which is a real (not confirmed) risk signal that this could also be
+   a non-tabular Map asset. Fetching with NO $select clause deliberately — a wrong field name
+   in $select throws a hard SODA error (that's exactly what happened with mpluto_bbl earlier),
+   so this reads whatever keys actually come back instead of guessing them. If this 403s or
+   errors, it fails soft: context outlines just don't appear, everything else keeps working. */
+const BOROUGH_OUTLINE_RESOURCE = 'gthc-hcne';
+let boroughOutlinesLoaded = false;
+async function loadBoroughOutlines(){
+  try{
+    const url = `${SOCRATA_BASE}${BOROUGH_OUTLINE_RESOURCE}.json?$limit=10`;
+    const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
+    if(!Array.isArray(rows) || !rows.length){ console.warn('Borough outlines: empty response'); return; }
+    const nameKey = Object.keys(rows[0]).find(k => /boro.*name|name.*boro/i.test(k)) ||
+                    Object.keys(rows[0]).find(k => k.toLowerCase() === 'borough');
+    for(const row of rows){
+      const geom = row.the_geom || row.geom || row.multipolygon;
+      if(!geom) continue;
+      const rings = allOuterRingsWorld(geom);
+      const label = nameKey ? row[nameKey] : '';
+      addBoroughOutlineMeshes(rings, label);
+    }
+    boroughOutlinesLoaded = true;
+  }catch(err){
+    console.warn('Borough outlines failed to load (context layer only, rest of the app is unaffected):', err);
+  }
+}
+function addBoroughOutlineMeshes(rings, label){
+  for(const ring of rings){
+    const shape = new THREE.Shape(ring.map(([x,z]) => new THREE.Vector2(x, z)));
+    const geo = new THREE.ShapeGeometry(shape);
+    geo.rotateX(-Math.PI/2);
+    geo.translate(0, -0.02, 0); // just under the lot/vacant-marker layer
+    const mat = new THREE.MeshBasicMaterial({color: 0xB8AD91, transparent:true, opacity:0.22, side:THREE.DoubleSide, depthWrite:false});
+    contextGroup.add(new THREE.Mesh(geo, mat));
+    const pts3d = ring.map(([x,z]) => new THREE.Vector3(x, -0.01, z));
+    pts3d.push(pts3d[0]);
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
+    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x8C8264, transparent:true, opacity:0.4})));
+  }
+}
+
+
 // Simple equirectangular projection centered on NYC, in feet, then scaled to world units.
 // Not a true State Plane projection — fine at city scale for a generative-art render, same
 // spirit as STAND's coastline approximation.
@@ -535,6 +600,31 @@ function outerRingWorld(geom){
   const outer = best[0];
   return outer.map(([lon,lat]) => projectLonLat(lon, lat));
 }
+
+// Unlike outerRingWorld (which keeps only the largest part — fine for a single building),
+// borough boundaries are real disjoint multi-part geometries (e.g. Queens/Bronx/Staten Island
+// each include small separate islands) — this keeps every part so none silently vanish.
+function allOuterRingsWorld(geom){
+  if(!geom || !geom.coordinates) return [];
+  let rings;
+  if(geom.type === 'Polygon') rings = [geom.coordinates];
+  else if(geom.type === 'MultiPolygon') rings = geom.coordinates;
+  else return [];
+  return rings.map(part => part[0].map(([lon,lat]) => projectLonLat(lon, lat))).filter(r => r.length >= 3);
+}
+
+// NORTH ORIENTATION — worked through explicitly rather than asserted, since this project has
+// already been burned twice by confident-but-wrong claims about live behavior:
+//   projectLonLat: zFt = -(lat-REF_LAT)*FT_PER_DEG_LAT, so increasing latitude (going north)
+//   moves a point toward DECREASING world Z. "North" in this scene is the -Z direction.
+//   updateCameraPosition (see below) at azimuth=0 places the camera at
+//   camTarget.z + camDist (i.e. south of the target, at LARGER z) and always looks at
+//   camTarget — so at azimuth=0 the camera looks toward -Z, i.e. it looks north. That's the
+//   standard "north-up" map convention (viewer south of the scene, facing north).
+//   updateCompass() rotates the needle by -camAzimuth: as azimuth increases the camera orbits
+//   toward +X (east) and the scene appears, on screen, to rotate the other way — so the needle
+//   has to counter-rotate to keep pointing at true north as the user actually perceives it.
+// Both the compass and the Plan View button below rely on azimuth=0 meaning true north-up.
 
 /* ================= Color modes ================= */
 const LANDUSE_LABELS = {
@@ -627,15 +717,40 @@ function stepCameraTween(now){
 }
 function recenterView(){
   animateCameraTo({azimuth: INITIAL_CAM.azimuth, elevation: INITIAL_CAM.elevation, dist: INITIAL_CAM.dist, target: new THREE.Vector3(0,0,0)});
+  inPlanView = false;
 }
 function resetToNorth(){
   animateCameraTo({azimuth: 0, elevation: camElevation, dist: camDist, target: camTarget});
+}
+
+// Plan view — a straight-down reading of the massing, always north-up (azimuth locked to 0,
+// see the NORTH ORIENTATION note near allOuterRingsWorld). Elevation is capped just shy of
+// pi/2 (not exactly vertical) deliberately: at exactly 90 degrees the camera's forward vector
+// becomes parallel to its up vector, which is the standard gimbal-lock case for a lookAt()
+// camera — the on-screen "up" direction becomes numerically unstable right at the pole. This
+// is close enough to a true plan view to be indistinguishable in practice while staying clear
+// of that singularity.
+const PLAN_VIEW_ELEVATION = 1.555; // ~89.1 degrees
+let inPlanView = false;
+let prePlanCam = null;
+function togglePlanView(){
+  if(inPlanView){
+    if(prePlanCam) animateCameraTo(prePlanCam);
+    inPlanView = false;
+  } else {
+    prePlanCam = {azimuth: camAzimuth, elevation: camElevation, dist: camDist, target: camTarget.clone()};
+    animateCameraTo({azimuth: 0, elevation: PLAN_VIEW_ELEVATION, dist: camDist, target: camTarget});
+    inPlanView = true;
+  }
+  document.getElementById('planViewBtn').classList.toggle('active', inPlanView);
+  document.getElementById('planViewBtn').textContent = inPlanView ? '◱ 3D View' : '◱ Plan View';
 }
 
 const nearGroup = new THREE.Group();   // full extrusion + floor lines
 const midGroup = new THREE.Group();    // bounding-box prism
 const farGroup = new THREE.Group();    // billboard points
 const envelopeGroup = new THREE.Group();
+const contextGroup = new THREE.Group(); // borough outlines — loaded once, independent of the per-borough lot data
 let farPoints = null, farPointRecords = [];
 
 const NEAR_MAX_DIST = 14;
@@ -665,7 +780,7 @@ function initScene(){
   ground.position.y = -0.05;
   scene.add(ground);
 
-  scene.add(nearGroup, midGroup, farGroup, envelopeGroup);
+  scene.add(nearGroup, midGroup, farGroup, envelopeGroup, contextGroup);
 
   updateCameraPosition();
   window.addEventListener('resize', onResize);
@@ -693,7 +808,14 @@ function wireOrbitControls(){
   const activePointers = new Map();
   let pinchStartDist = null, pinchStartCamDist = null;
 
-  function cancelTween(){ camTween = null; } // any manual input interrupts an in-flight recenter/north-reset
+  function cancelTween(){
+    camTween = null; // any manual input interrupts an in-flight recenter/north-reset
+    if(inPlanView){
+      inPlanView = false;
+      const btn = document.getElementById('planViewBtn');
+      if(btn){ btn.classList.remove('active'); btn.textContent = '◱ Plan View'; }
+    }
+  }
 
   dom.addEventListener('pointerdown', (e)=>{
     cancelTween();
@@ -1003,6 +1125,7 @@ function updateCompass(){
 }
 document.getElementById('compassDial').addEventListener('click', resetToNorth);
 document.getElementById('recenterBtn').addEventListener('click', recenterView);
+document.getElementById('planViewBtn').addEventListener('click', togglePlanView);
 document.getElementById('zoomInBtn').addEventListener('click', ()=>{
   camTween = null;
   camDist = Math.max(1.5, camDist * 0.72);
@@ -1114,6 +1237,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   document.getElementById('footVersion').innerHTML = `MASSING · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a>`;
   initScene();
   updateLegend();
+  loadBoroughOutlines();
   selectBorough(1);
 })();
 </script>
