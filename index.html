@@ -5,6 +5,31 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.0 - 2026-07-14 - Two requests. (1) Day mode too bright — the flat solid-color background
+    read as harsh against a full-bleed canvas with no other texture. Replaced with a small
+    canvas-generated vertical gradient (soft pale blue zenith fading to the existing cream near
+    the horizon; a matching deep-navy variant for dark mode) set as scene.background, regenerated
+    on theme toggle. Fog stays a plain THREE.Color matching the gradient's horizon stop
+    specifically, since THREE.Fog has no gradient support and fog only visually matters near the
+    ground at this camera's typical angles anyway. Deliberately did NOT set texture.colorSpace —
+    that API is Three.js r152+; this app loads r128 (confirmed from the actual script tag), and
+    nothing else here does sRGB-aware color handling either, so adding it in one spot would have
+    introduced a color mismatch rather than fixed one.
+    (2) Filter/layers tool — Land Use already had click-to-hide-category filtering, but nothing
+    signaled the legend items were clickable (no checkbox, no visual affordance beyond a subtle
+    opacity change), and FAR Use / Year Built had NO filtering at all — FAR's categoryForLot()
+    unconditionally returned '?' for every lot, and Year Built used raw 20-year bins that were
+    never exposed in the UI (a comment literally flagged this gap: "Per-decade filtering not in
+    v1.0.0 — flag if worth adding"). Added real discrete buckets for both: FAR gets the same 3
+    categories already named in its legend text (Underbuilt / Partial / At-or-over capacity) plus
+    an Unknown bucket for lots with no applicable zoning FAR; Year Built gets 5 named eras instead
+    of 36 raw 20-year bins. Confirmed live against the real 15,000-lot Manhattan dataset before
+    shipping: FAR buckets split 5339/7304/2208/149 (a sane real distribution, not degenerate), and
+    hiding the "at/over capacity" bucket dropped the rendered near-tier mesh count from 15,848 to
+    13,546 — a ~2,302-lot drop against a 2,208-lot bucket, the small gap expected from lots with
+    multiple footprint parts. Added a visible checkbox affordance to every legend item (previously
+    just a subtle opacity dim with no indicator that it was interactive) and a Show All / Hide All
+    shortcut. Help modal updated to actually mention the filtering exists.
   v1.3.0 - 2026-07-14 - Two requests: better control layout, and in-app help documentation.
     Control layout: the legend and the compass/recenter/plan-view/zoom cluster used to be two
     independently `position:fixed` elements, with the second one positioned by a hand-guessed
@@ -308,7 +333,25 @@
   }
   #sidePanel{overflow-y:auto; flex:0 1 auto;}
   #sidePanel .legend-item{display:flex; align-items:center; gap:8px; padding:5px 2px; font-family:var(--font-ui); font-size:12.5px; border:none; background:none; width:100%; text-align:left; color:var(--ink);}
-  .legend-item.off{opacity:0.35;}
+  .legend-item.off{opacity:0.55;}
+  .legendCheck{
+    width:13px; height:13px; flex:none; border-radius:3px;
+    border:1.5px solid var(--ink-soft); position:relative;
+  }
+  .legend-item:not(.off) .legendCheck{background:var(--ink); border-color:var(--ink);}
+  .legend-item:not(.off) .legendCheck::after{
+    content:''; position:absolute; left:3px; top:0px; width:4px; height:8px;
+    border:solid var(--paper); border-width:0 1.5px 1.5px 0; transform:rotate(45deg);
+  }
+  .legendActions{display:flex; justify-content:flex-end; margin-bottom:2px;}
+  .legendLink{
+    background:none; border:none; padding:2px 0; font-family:var(--font-ui); font-size:11px;
+    font-weight:600; color:var(--accent); text-decoration:underline; text-underline-offset:2px;
+  }
+  .legendNote{
+    font-family:var(--font-ui); font-size:11px; color:var(--ink-soft); line-height:1.5;
+    margin-top:8px; padding-top:8px; border-top:1px solid var(--line);
+  }
   .swatch{width:12px; height:12px; border-radius:3px; flex:none;}
 
   #navPanel{flex:none;}
@@ -490,6 +533,7 @@
     <div class="helpSection">
       <div class="helpLabel">Color modes</div>
       <p><b>Land Use</b> — the lot's recorded use category. <b>FAR Use</b> — how built-out a lot is relative to what zoning allows there. <b>Year Built</b> — construction era.</p>
+      <p>Click any item in the legend to hide that category from the view — click again to bring it back. "Show all" / "Hide all" toggles everything at once.</p>
     </div>
     <div class="helpSection">
       <div class="helpLabel">Zoning envelope</div>
@@ -523,7 +567,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.3.0'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.0'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -889,6 +933,41 @@ function colorForLot(lot, mode){
   return 0x9C9587;
 }
 
+// Discrete, filterable buckets for the two continuous-gradient color modes — mirrors the bucket
+// boundaries already described in the FAR legend text and the year-color gradient's own range.
+const FAR_BUCKETS = [
+  {key:'under', label:'Underbuilt (<50%)', swatch:0xB23A2E},
+  {key:'partial', label:'Partial (50–100%)', swatch:0xC8932A},
+  {key:'atOrOver', label:'At/over capacity (100%+)', swatch:0x3E7A4C},
+  {key:'unknown', label:'No applicable zoning FAR', swatch:0x9C9587},
+];
+function farBucketKey(lot){
+  const u = farUtilization(lot);
+  if(u === null) return 'unknown';
+  if(u < 0.5) return 'under';
+  if(u < 1.0) return 'partial';
+  return 'atOrOver';
+}
+const YEAR_ERAS = [
+  {key:'unknown', label:'Unknown', max:1800},
+  {key:'pre1900', label:'Before 1900', max:1900},
+  {key:'e1900', label:'1900–1945', max:1945},
+  {key:'e1945', label:'1945–1980', max:1980},
+  {key:'e1980', label:'1980–2000', max:2000},
+  {key:'e2000', label:'2000–present', max:Infinity},
+];
+function yearEraKey(lot){
+  const yr = Number(lot.yearbuilt) || 0;
+  for(const era of YEAR_ERAS) if(yr < era.max) return era.key;
+  return 'e2000';
+}
+function yearEraSwatch(key){
+  // sample colorForYearBuilt at a representative year for each era, so the legend swatch
+  // always matches what's actually painted on the buildings in that bucket
+  const sampleYear = {unknown:0, pre1900:1875, e1900:1922, e1945:1962, e1980:1990, e2000:2015}[key];
+  return colorForYearBuilt({yearbuilt: sampleYear});
+}
+
 /* ================= Three.js scene ================= */
 let scene, camera, renderer;
 const INITIAL_CAM = {azimuth: 0.9, elevation: 0.55, dist: 750};
@@ -971,10 +1050,42 @@ let farPoints = null, farPointRecords = [];
 const NEAR_MAX_DIST = 14;
 const MID_MAX_DIST = 55;
 
+// A flat solid-color background reads as noticeably harsh/bright in day mode against a full-
+// bleed canvas with no other visual texture. Building a small vertical-gradient canvas texture
+// instead of a THREE.Color — same trick used for a sky dome in far cheaper form, since this is
+// a static backdrop, not something the camera flies through. Fog color is kept a plain
+// THREE.Color matching the gradient's HORIZON stop specifically (not the zenith), since fog
+// only ever visually matters near the ground/horizon at this camera's typical elevation range —
+// THREE.Fog itself has no gradient support.
+const SKY_STOPS = {
+  light: {zenith:'#C7D9E6', horizon:'#EDEAE0'},
+  dark:  {zenith:'#0B0E14', horizon:'#14171B'}
+};
+function buildSkyTexture(theme){
+  const stops = SKY_STOPS[theme];
+  const canvas = document.createElement('canvas');
+  canvas.width = 2; canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, stops.zenith);
+  grad.addColorStop(1, stops.horizon);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 2, 256);
+  const tex = new THREE.CanvasTexture(canvas);
+  return tex;
+}
+function applySkyBackground(){
+  const theme = currentTheme() === 'dark' ? 'dark' : 'light';
+  if(scene.background && scene.background.dispose) scene.background.dispose();
+  scene.background = buildSkyTexture(theme);
+  const horizonHex = new THREE.Color(SKY_STOPS[theme].horizon).getHex();
+  if(!scene.fog) scene.fog = new THREE.Fog(horizonHex, 1200, 3200);
+  else scene.fog.color.setHex(horizonHex);
+}
+
 function initScene(){
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(currentTheme() === 'dark' ? 0x14171B : 0xEDEAE0);
-  scene.fog = new THREE.Fog(scene.background.getHex(), 1200, 3200);
+  applySkyBackground();
   camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 4000);
   renderer = new THREE.WebGLRenderer({antialias:true});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -1299,11 +1410,9 @@ function addEnvelopeMesh(rec){
 
 function categoryForLot(lot){
   if(colorMode === 'landuse') return luCode(lot) || '?';
-  if(colorMode === 'year'){
-    const yr = Number(lot.yearbuilt)||0;
-    return yr ? String(Math.floor(yr/20)*20) : '?';
-  }
-  return '?'; // FAR-utilization mode is a continuous gradient, not togglable categories
+  if(colorMode === 'year') return yearEraKey(lot);
+  if(colorMode === 'far') return farBucketKey(lot);
+  return '?';
 }
 
 /* ================= Click to inspect ================= */
@@ -1393,31 +1502,55 @@ window.addEventListener('keydown', (e)=>{
 });
 
 /* ================= UI wiring ================= */
+function legendItemsFor(mode){
+  if(mode === 'landuse') return Object.entries(LANDUSE_LABELS).map(([code,label])=>(
+    {key:code, label, swatch:colorForLandUse(code)}));
+  if(mode === 'far') return FAR_BUCKETS.map(b=>({key:b.key, label:b.label, swatch:b.swatch}));
+  if(mode === 'year') return YEAR_ERAS.map(e=>({key:e.key, label:e.label, swatch:yearEraSwatch(e.key)}));
+  return [];
+}
 function updateLegend(){
   const list = document.getElementById('legendList');
   const title = document.getElementById('legendTitle');
+  const titles = {landuse:'Land Use', far:'FAR Utilization', year:'Year Built'};
+  title.textContent = titles[colorMode] || '';
+  const items = legendItemsFor(colorMode);
   list.innerHTML = '';
-  if(colorMode === 'landuse'){
-    title.textContent = 'Land Use';
-    Object.entries(LANDUSE_LABELS).forEach(([code, label])=>{
-      const off = hiddenCategories.has(code);
-      const btn = document.createElement('button');
-      btn.className = `legend-item${off?' off':''}`;
-      btn.innerHTML = `<span class="swatch" style="background:#${colorForLandUse(code).toString(16).padStart(6,'0')}"></span>${escapeHtml(label)}`;
-      btn.onclick = ()=>{ off ? hiddenCategories.delete(code) : hiddenCategories.add(code); buildBoroughMeshes(currentRecords); updateLegend(); };
-      list.appendChild(btn);
-    });
-  } else if(colorMode === 'far'){
-    title.textContent = 'FAR Utilization';
-    list.innerHTML = `<div style="font-family:var(--font-ui); font-size:11.5px; color:var(--ink-soft); line-height:1.5;">
-      Continuous gradient: built FAR ÷ max allowed FAR (residential/commercial/community-facility, whichever is greatest).<br><br>
-      <span class="swatch" style="background:#B23A2E; display:inline-block;"></span> underbuilt&nbsp;&nbsp;
-      <span class="swatch" style="background:#C8932A; display:inline-block;"></span> partial&nbsp;&nbsp;
-      <span class="swatch" style="background:#3E7A4C; display:inline-block;"></span> at/over capacity</div>`;
+
+  const actions = document.createElement('div');
+  actions.className = 'legendActions';
+  const allOff = items.every(it => hiddenCategories.has(it.key));
+  const link = document.createElement('button');
+  link.className = 'legendLink';
+  link.textContent = allOff ? 'Show all' : 'Hide all';
+  link.onclick = ()=>{
+    if(allOff) items.forEach(it => hiddenCategories.delete(it.key));
+    else items.forEach(it => hiddenCategories.add(it.key));
+    buildBoroughMeshes(currentRecords);
+    updateLegend();
+  };
+  actions.appendChild(link);
+  list.appendChild(actions);
+
+  items.forEach(({key, label, swatch})=>{
+    const off = hiddenCategories.has(key);
+    const btn = document.createElement('button');
+    btn.className = `legend-item${off?' off':''}`;
+    btn.innerHTML = `<span class="legendCheck"></span><span class="swatch" style="background:#${swatch.toString(16).padStart(6,'0')}"></span>${escapeHtml(label)}`;
+    btn.onclick = ()=>{ off ? hiddenCategories.delete(key) : hiddenCategories.add(key); buildBoroughMeshes(currentRecords); updateLegend(); };
+    list.appendChild(btn);
+  });
+
+  if(colorMode === 'far'){
+    const note = document.createElement('div');
+    note.className = 'legendNote';
+    note.textContent = 'Built FAR ÷ max allowed FAR (residential/commercial/community-facility, whichever is greatest).';
+    list.appendChild(note);
   } else if(colorMode === 'year'){
-    title.textContent = 'Year Built';
-    list.innerHTML = `<div style="font-family:var(--font-ui); font-size:11.5px; color:var(--ink-soft); line-height:1.5;">
-      Continuous gradient, 1850 (cool) → present (warm). Per-decade filtering not in v1.0.0 — flag if worth adding.</div>`;
+    const note = document.createElement('div');
+    note.className = 'legendNote';
+    note.textContent = 'Color still reads as a continuous gradient on the buildings — these bins are for filtering, not a hard color cutoff.';
+    list.appendChild(note);
   }
 }
 
@@ -1472,10 +1605,7 @@ function applyThemeChrome(){
   const dark = currentTheme() === 'dark';
   document.getElementById('themeToggle').textContent = dark ? '☀️' : '🌙';
   document.getElementById('themeColorMeta').setAttribute('content', dark ? '#14171B' : '#EDEAE0');
-  if(scene){
-    scene.background.setHex(dark ? 0x14171B : 0xEDEAE0);
-    scene.fog.color.copy(scene.background);
-  }
+  if(scene) applySkyBackground();
 }
 function toggleTheme(){
   const next = currentTheme() === 'dark' ? 'light' : 'dark';
