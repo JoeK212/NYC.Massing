@@ -5,6 +5,26 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.0.3 - 2026-07-14 - Real root cause of the persistent 403, found live via Claude in Chrome
+    against the deployed nycmassing.netlify.app (not file://, ruling out the origin theory from
+    v1.0.2): MapPLUTO (f888-ni5f) is a Socrata "non-tabular" Map asset — its /resource/{id}.json
+    endpoint hard-rejects with 403 "no row or column access to non-tabular tables" from any
+    origin, permanently. Replaced with 64uk-42ks, the tabular PLUTO resource (confirmed 200 OK
+    live) — at the cost of losing lot-polygon geometry entirely, since that resource has none.
+    Live querying also exposed two more real bugs the doc-based field list couldn't have caught:
+    Building Footprints' actual Socrata field names don't match its shapefile attribute names
+    (heightroof/groundelev/cnstrct_yr/feat_code/mpluto_bbl are all wrong; real names are
+    height_roof/ground_elevation/construction_year/feature_code/mappluto_bbl, confirmed via a
+    live $limit=1 query), and BBL comes back in different literal formats from each resource
+    ("1018150114.00000000" vs "1000010010") — a same-string join would have silently matched
+    zero rows even with every field name correct. Added canonBBL() and confirmed a real match
+    live before trusting it. Vacant lots now get a synthetic square footprint from real lat/lon
+    + lotarea (syntheticLotRing) since the new PLUTO source has no polygon to fall back on.
+    Footprint fetch now also filters feature_code='2100' (real buildings only, excludes
+    garages/canopies/tanks). landuse values confirmed unpadded ("1" not "01") — added luCode().
+    CACHE_VERSION bumped to v2 to invalidate any v1 cache built from the dead code path. Still
+    not yet confirmed: what this actually looks like rendered on screen — the join and fields
+    were verified via raw fetch/JSON this session, not a rendered borough.
   v1.0.2 - 2026-07-14 - Root cause of "canvas is blank" found live (console screenshot from a
     file:// load): NYC Open Data returns HTTP 403 for requests with no real page origin, which
     is exactly what Origin: null from a file:// page sends — confirmed by three identical,
@@ -240,7 +260,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.0.2'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.0.3'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -323,31 +343,54 @@ async function fetchWithTimeout(url, {timeoutMs=15000, retries=3} = {}){
 
 /* ================= Data sources =================
    MapPLUTO (f888-ni5f): PLUTO attributes + lot polygon geometry, joined on bbl.
-   Building Footprints (5zhs-2jue): real building outline + real heightroof, joined on mpluto_bbl.
-   Field names below are from DCP/OTI's published data dictionaries — not yet confirmed against
-   a live query from this build environment (see header comment KNOWN GAP). Treat the first real
-   load the way any STAND live-data fix is treated: verify against the actual response, don't
-   assume the field list is right because it matches documentation. */
+   Building Footprints (5zhs-2jue): real building outline + real roof height, joined on a
+   canonicalized BBL.
+
+   CORRECTED LIVE 2026-07-14 via Claude in Chrome against the actual deployed site — this
+   replaces the doc-derived field list, which was wrong in two ways docs alone never surfaced:
+   (1) f888-ni5f (MapPLUTO) is a Socrata "non-tabular" Map asset — /resource/{id}.json
+       rejects it with a 403 and "no row or column access to non-tabular tables", from ANY
+       origin, always. Not a CORS/origin issue at all (that first diagnosis was wrong).
+       Replaced with 64uk-42ks, the plain tabular PLUTO resource — confirmed 200 OK live,
+       but it carries NO geometry at all (no lot polygon), a real capability loss handled
+       below with a synthetic lat/lon + lotarea footprint for vacant lots.
+   (2) Socrata's API field names are generated from each column's *display title*, not its
+       shapefile attribute abbreviation — so heightroof/groundelev/cnstrct_yr/feat_code/
+       mpluto_bbl (all from the published data dictionary) don't exist on the live resource.
+       Real names, confirmed via a live $limit=1 query: height_roof, ground_elevation,
+       construction_year, feature_code, mappluto_bbl.
+   (3) BBL comes back in a different literal format from each resource — PLUTO's bbl is a
+       SODA number type serialized as "1018150114.00000000"; Building Footprints' mappluto_bbl
+       is a clean text "1018150114". A direct string-equality join silently matches nothing.
+       canonBBL() below normalizes both before every join lookup — confirmed live with a real
+       matched pair before trusting it.
+   Still NOT yet verified: what the actual joined geometry looks like rendered on screen (this
+   session confirmed the join and fields via raw fetch/JSON, not a rendered borough). Treat
+   that the way any STAND visual fix is treated — confirm live, don't assume. */
 const SOCRATA_BASE = 'https://data.cityofnewyork.us/resource/';
-const MAPPLUTO_RESOURCE = 'f888-ni5f';
+const PLUTO_RESOURCE = '64uk-42ks';   // tabular PLUTO attributes — NO geometry (see note above)
 const FOOTPRINT_RESOURCE = '5zhs-2jue';
 const MAX_LOTS_PER_BOROUGH = 15000; // v1.0.0 perf guard — raise once real-world frame time is verified live
 const BORO_CODE_TO_LETTER = {1:'MN', 2:'BX', 3:'BK', 4:'QN', 5:'SI'};
-const CACHE_VERSION = 'v1'; // bump this any time the field selection or join logic changes
+const CACHE_VERSION = 'v2'; // bumped — v1 cached entries were built from the broken f888-ni5f path
 
-const MAPPLUTO_FIELDS = ['bbl','borough','block','lot','address','zipcode','landuse','bldgclass',
+// Both PLUTO's bbl (SODA number, serializes as "1018150114.00000000") and Building Footprints'
+// mappluto_bbl (SODA text, "1018150114") need this before any join comparison or lookup key.
+function canonBBL(bbl){ return String(Math.round(parseFloat(bbl))); }
+
+const PLUTO_FIELDS = ['bbl','borough','block','lot','address','zipcode','landuse','bldgclass',
   'lotarea','bldgarea','comarea','resarea','numbldgs','numfloors','unitsres','unitstotal',
   'yearbuilt','zonedist1','overlay1','spdist1','builtfar','residfar','commfar','facilfar',
-  'latitude','longitude','the_geom'];
-const FOOTPRINT_FIELDS = ['mpluto_bbl','heightroof','groundelev','cnstrct_yr','feat_code','the_geom'];
+  'latitude','longitude','lotfront','lotdepth'];
+const FOOTPRINT_FIELDS = ['mappluto_bbl','height_roof','ground_elevation','construction_year','feature_code','the_geom'];
 
-async function fetchMapPlutoBorough(boroLetter){
-  const select = MAPPLUTO_FIELDS.join(',');
+async function fetchPlutoBorough(boroLetter){
+  const select = PLUTO_FIELDS.join(',');
   const rows = [];
   let offset = 0;
   const pageSize = 5000;
   while(rows.length < MAX_LOTS_PER_BOROUGH){
-    const url = `${SOCRATA_BASE}${MAPPLUTO_RESOURCE}.json?$select=${select}&$where=borough='${boroLetter}'&$limit=${pageSize}&$offset=${offset}`;
+    const url = `${SOCRATA_BASE}${PLUTO_RESOURCE}.json?$select=${select}&$where=borough='${boroLetter}'&$limit=${pageSize}&$offset=${offset}`;
     const page = await fetchWithTimeout(url);
     rows.push(...page);
     if(page.length < pageSize) break;
@@ -361,9 +404,11 @@ async function fetchFootprintsBorough(boroDigit){
   const rows = [];
   let offset = 0;
   const pageSize = 5000;
-  // footprints has no borough field of its own — filter by the leading digit of mpluto_bbl
+  // footprints has no borough field of its own — filter by the leading digit of mappluto_bbl.
+  // feature_code='2100' restricts to real buildings (excludes garages/canopies/tanks/etc — see
+  // the FEATURE_CODE enum in the Building Footprints metadata).
   while(true){
-    const url = `${SOCRATA_BASE}${FOOTPRINT_RESOURCE}.json?$select=${select}&$where=starts_with(mpluto_bbl,'${boroDigit}')&$limit=${pageSize}&$offset=${offset}`;
+    const url = `${SOCRATA_BASE}${FOOTPRINT_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(`starts_with(mappluto_bbl,'${boroDigit}') AND feature_code='2100'`)}&$limit=${pageSize}&$offset=${offset}`;
     const page = await fetchWithTimeout(url);
     rows.push(...page);
     if(page.length < pageSize || rows.length > MAX_LOTS_PER_BOROUGH * 2) break;
@@ -391,7 +436,7 @@ async function loadBoroughData(boroDigit){
   if(cached){ toast(`${boroLetter} loaded from cache`); return cached; }
 
   document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} tax lots…`;
-  const plutoRows = await fetchMapPlutoBorough(boroLetter);
+  const plutoRows = await fetchPlutoBorough(boroLetter);
 
   document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} building footprints…`;
   const footprintRows = await fetchFootprintsBorough(boroDigit);
@@ -399,11 +444,11 @@ async function loadBoroughData(boroDigit){
   document.getElementById('loadMsg').textContent = `Joining ${plutoRows.length} lots to ${footprintRows.length} footprints…`;
   const footprintsByBBL = {};
   for(const fp of footprintRows){
-    const bbl = fp.mpluto_bbl;
-    if(!bbl) continue;
-    (footprintsByBBL[bbl] = footprintsByBBL[bbl] || []).push(fp);
+    if(!fp.mappluto_bbl) continue;
+    const key = canonBBL(fp.mappluto_bbl);
+    (footprintsByBBL[key] = footprintsByBBL[key] || []).push(fp);
   }
-  const records = plutoRows.map(lot=>({ lot, footprints: footprintsByBBL[lot.bbl] || [] }));
+  const records = plutoRows.map(lot=>({ lot, footprints: footprintsByBBL[canonBBL(lot.bbl)] || [] }));
   saveToCache(boroLetter, records);
   return records;
 }
@@ -449,6 +494,8 @@ const LANDUSE_COLORS = {
   '05':0x1F4E79, '06':0x5A5F66, '07':0x746553, '08':0x3E7A4C,
   '09':0x6FA87A, '10':0x9C9587, '11':0xCFC8B4
 };
+// Live-confirmed: landuse values from 64uk-42ks are unpadded ("1".."11"), not "01".."11".
+function luCode(lot){ return String(lot.landuse||'').padStart(2,'0'); }
 function colorForLandUse(lu){ return LANDUSE_COLORS[lu] || 0x9C9587; }
 
 function maxAllowedFar(lot){
@@ -477,7 +524,7 @@ function colorForYearBuilt(lot){
   return c.getHex();
 }
 function colorForLot(lot, mode){
-  if(mode === 'landuse') return colorForLandUse(lot.landuse);
+  if(mode === 'landuse') return colorForLandUse(luCode(lot));
   if(mode === 'far') return colorForFarUtilization(lot);
   if(mode === 'year') return colorForYearBuilt(lot);
   return 0x9C9587;
@@ -619,15 +666,17 @@ function buildBoroughMeshes(records){
       for(const fp of rec.footprints){
         const ring = outerRingWorld(fp.the_geom);
         if(!ring || ring.length < 3) continue;
-        const heightFt = Number(fp.heightroof) || estimateHeightFt(lot);
+        const heightFt = Number(fp.height_roof) || estimateHeightFt(lot);
         addNearMesh(ring, heightFt, color, lot);
         addMidMesh(ring, heightFt, color);
         pushFarPoint(ring, heightFt, color, farPositions, farColors, farSizes, rec);
       }
     } else {
-      // vacant / no footprint record — flat lot-polygon marker per v1 decision
-      const ring = outerRingWorld(lot.the_geom);
-      if(ring && ring.length >= 3){
+      // vacant / no footprint record — flat marker per v1 decision. PLUTO's tabular resource
+      // (64uk-42ks) carries no polygon at all, only a lat/lon point — approximate a square
+      // footprint from real lotarea, centered on the real point, rather than skip it.
+      const ring = syntheticLotRing(lot);
+      if(ring){
         addNearMesh(ring, 2, 0x9C9587, lot, true);
         addMidMesh(ring, 2, 0x9C9587);
         pushFarPoint(ring, 2, 0x9C9587, farPositions, farColors, farSizes, rec);
@@ -641,9 +690,18 @@ function buildBoroughMeshes(records){
   updateLOD();
 }
 
+function syntheticLotRing(lot){
+  const lat = Number(lot.latitude), lon = Number(lot.longitude), areaFt = Number(lot.lotarea);
+  if(!lat || !lon || !areaFt || areaFt <= 0) return null;
+  const [cx, cz] = projectLonLat(lon, lat);
+  const sideWorld = ftToWorld(Math.sqrt(areaFt));
+  const h = sideWorld/2;
+  return [[cx-h,cz-h],[cx+h,cz-h],[cx+h,cz+h],[cx-h,cz+h]];
+}
+
 function estimateHeightFt(lot){
   const floors = Number(lot.numfloors) || 1;
-  return floors * 11; // fallback only — real heightroof from Building Footprints is used whenever present
+  return floors * 11; // fallback only — real height_roof from Building Footprints is used whenever present
 }
 
 function ringToShape(ring){
@@ -730,7 +788,7 @@ function addEnvelopeMesh(rec){
   if(maxFar <= 0 || lotAreaFt <= 0) return;
   const maxBuildableAreaFt = lotAreaFt * maxFar;
 
-  const ring = (rec.footprints && rec.footprints[0]) ? outerRingWorld(rec.footprints[0].the_geom) : outerRingWorld(lot.the_geom);
+  const ring = (rec.footprints && rec.footprints[0]) ? outerRingWorld(rec.footprints[0].the_geom) : syntheticLotRing(lot);
   if(!ring || ring.length < 3) return;
   const footprintAreaFt = ringArea(ring) || lotAreaFt;
   const envelopeHeightFt = maxBuildableAreaFt / footprintAreaFt;
@@ -746,7 +804,7 @@ function addEnvelopeMesh(rec){
 }
 
 function categoryForLot(lot){
-  if(colorMode === 'landuse') return lot.landuse || '?';
+  if(colorMode === 'landuse') return luCode(lot) || '?';
   if(colorMode === 'year'){
     const yr = Number(lot.yearbuilt)||0;
     return yr ? String(Math.floor(yr/20)*20) : '?';
@@ -793,10 +851,10 @@ function showInspectRecord(rec){
   document.getElementById('inspectPanel').style.display = 'block';
   document.getElementById('inspectAddr').textContent = lot.address || `BBL ${lot.bbl}`;
   document.getElementById('inspectBBL').textContent = lot.bbl || '—';
-  document.getElementById('inspectLandUse').textContent = LANDUSE_LABELS[lot.landuse] || lot.landuse || '—';
+  document.getElementById('inspectLandUse').textContent = LANDUSE_LABELS[luCode(lot)] || lot.landuse || '—';
   document.getElementById('inspectYear').textContent = lot.yearbuilt || '—';
   const fp = rec.footprints && rec.footprints[0];
-  document.getElementById('inspectHeight').textContent = fp && fp.heightroof ? `${Math.round(fp.heightroof)} ft (real)` : (lot.numfloors ? `~${Math.round(estimateHeightFt(lot))} ft (est.)` : '—');
+  document.getElementById('inspectHeight').textContent = fp && fp.height_roof ? `${Math.round(fp.height_roof)} ft (real)` : (lot.numfloors ? `~${Math.round(estimateHeightFt(lot))} ft (est.)` : '—');
   document.getElementById('inspectFloors').textContent = lot.numfloors || '—';
   document.getElementById('inspectLotArea').textContent = lot.lotarea ? `${Number(lot.lotarea).toLocaleString()} sf` : '—';
   document.getElementById('inspectBuiltFar').textContent = lot.builtfar || '—';
