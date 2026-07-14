@@ -5,6 +5,17 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.7 - 2026-07-14 - Reported the borough boundary lines are still very faint/unreadable even
+    after v1.4.6 raised opacity to 0.85 (live screenshot). Root cause: the outline was a plain
+    THREE.Line/LineBasicMaterial — WebGL only honors linewidth on a handful of platforms (mostly
+    macOS OpenGL), and on the far more common ANGLE/Direct3D path (Windows Chrome, this
+    screenshot included) every GL line renders at exactly 1px regardless of the linewidth value
+    set in code, so no opacity or color change could ever fix this — opacity was never the real
+    problem. Replaced the line with a real ribbon mesh (a triangle-strip band in the XZ plane,
+    plus a small square filler at each vertex to cover the outer-corner gaps a mitered join would
+    otherwise leave), rendered as an unlit MeshBasicMaterial. This gives the boundary a true,
+    controllable on-screen width on every platform instead of depending on a GL feature most
+    browsers ignore.
   v1.4.6 - 2026-07-14 - Reported the borough boundary lines are very weak/faint, with a live
     screenshot showing them barely visible against the dark theme background. The outline was
     drawn at opacity:0.55 while the v1.4.5 borough name label sitting right next to it (same
@@ -619,7 +630,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.6'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.7'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -885,6 +896,44 @@ function buildBoroughLabelSprite(text){
   sprite.scale.set(worldHeight * (canvas.width/canvas.height), worldHeight, 1);
   return sprite;
 }
+const BOROUGH_OUTLINE_WIDTH = 2.5; // world units (~125ft at this scene's ~50ft/unit scale) — a real mesh
+  // width, not a GL linewidth hint, so it renders identically on every platform (see v1.4.7 note below)
+function buildRingRibbonGeometry(ring, width){
+  // v1.4.7: builds the outline as an actual triangle-strip band instead of a THREE.Line.
+  // THREE.LineBasicMaterial's `linewidth` is a GL line-width hint that only a handful of
+  // platforms (mostly macOS's OpenGL backend) honor — on ANGLE/Direct3D, which is what most
+  // Windows Chrome installs use, every WebGL line is forced to exactly 1px no matter what
+  // linewidth or opacity is set to. That's why raising opacity in v1.4.6 didn't fix the
+  // reported faintness: the line was already 1px, opacity was never the bottleneck. A mesh
+  // has a real, controllable on-screen footprint on every platform, so it doesn't depend on
+  // that GL feature at all.
+  const half = width / 2;
+  const positions = [];
+  const n = ring.length;
+  for(let i=0;i<n;i++){
+    const [x0,z0] = ring[i];
+    const [x1,z1] = ring[(i+1)%n];
+    const dx = x1-x0, dz = z1-z0;
+    const len = Math.hypot(dx,dz) || 1;
+    const nx = -dz/len*half, nz = dx/len*half;
+    // segment quad (two triangles), offset to either side of the centerline
+    positions.push(
+      x0+nx,0,z0+nz,  x0-nx,0,z0-nz,  x1-nx,0,z1-nz,
+      x0+nx,0,z0+nz,  x1-nx,0,z1-nz,  x1+nx,0,z1+nz
+    );
+    // small square filler at each vertex — segments meet at an angle on real coastline data,
+    // and without a joint filler those outer corners show a visible gap; a plain axis-aligned
+    // square (rather than a proper mitered join) is enough to close it at this outline's scale
+    positions.push(
+      x0-half,0,z0-half,  x0+half,0,z0-half,  x0+half,0,z0+half,
+      x0-half,0,z0-half,  x0+half,0,z0+half,  x0-half,0,z0+half
+    );
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.computeBoundingSphere();
+  return geo;
+}
 function addBoroughOutlineMeshes(rings, label){
   // v1.2.4: the filled ShapeGeometry wash is gone. Two rounds of trying to make real NYC
   // coastline data triangulate cleanly both failed for the same underlying reason — even after
@@ -893,21 +942,19 @@ function addBoroughOutlineMeshes(rings, label){
   // the decimated ring parts, across every borough including Manhattan, self-intersect after
   // decimation even though none of them do before it). A true topology-preserving simplifier
   // would fix this properly, but that's real added complexity for what is a low-value backdrop
-  // wash, not the data itself. The stroke below carries 100% of the information that matters
-  // (the boundary shape) and structurally cannot have this bug class — it's drawn as connected
-  // line segments, never triangulated. Matches the project's own standing lesson: after a
-  // mechanism breaks the same way twice, stop re-patching it and reconsider the design instead.
+  // wash, not the data itself. The ribbon below carries 100% of the information that matters
+  // (the boundary shape) and structurally cannot have this bug class — each segment is an
+  // independent quad, never a single triangulated polygon.
   for(const ring of rings){
     // backstop alongside the logarithmicDepthBuffer fix above: a bigger separation from the
     // ground plane (was -0.01, now -0.3 — still visually flush at this scene's scale) gives
     // more absolute margin before precision loss can matter, and depthWrite:false is standard
-    // practice for a transparent overlay line so overlapping segments of the SAME outline don't
+    // practice for a transparent overlay so overlapping segments of the SAME outline don't
     // z-fight each other regardless of camera distance
-    const pts3d = ring.map(([x,z]) => new THREE.Vector3(x, -0.3, z));
-    pts3d.push(pts3d[0]);
-    const lineGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
-    lineGeo.computeBoundingSphere();
-    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x9C917A, transparent:true, opacity:0.85, depthWrite:false})));
+    const ribbonGeo = buildRingRibbonGeometry(ring, BOROUGH_OUTLINE_WIDTH);
+    const ribbonMesh = new THREE.Mesh(ribbonGeo, new THREE.MeshBasicMaterial({color:0x9C917A, transparent:true, opacity:0.9, depthWrite:false, side:THREE.DoubleSide}));
+    ribbonMesh.position.y = -0.3;
+    contextGroup.add(ribbonMesh);
   }
   if(label && rings.length){
     // place at the largest ring's centroid, not the first ring or an average across all
