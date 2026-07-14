@@ -5,6 +5,10 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.6 - 2026-07-14 - Reported the borough boundary lines are very weak/faint, with a live
+    screenshot showing them barely visible against the dark theme background. The outline was
+    drawn at opacity:0.55 while the v1.4.5 borough name label sitting right next to it (same
+    color family, proven legible in the same screenshot) uses 0.85. Raised the outline to match.
   v1.4.5 - 2026-07-14 - Requested borough/landmass name labels, full names not abbreviations.
     loadBoroughOutlines() already fetched each borough's name alongside its outline geometry
     (the boro_name field from the same NYC Open Data resource) and passed it into
@@ -615,7 +619,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.5'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.6'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -903,7 +907,7 @@ function addBoroughOutlineMeshes(rings, label){
     pts3d.push(pts3d[0]);
     const lineGeo = new THREE.BufferGeometry().setFromPoints(pts3d);
     lineGeo.computeBoundingSphere();
-    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x9C917A, transparent:true, opacity:0.55, depthWrite:false})));
+    contextGroup.add(new THREE.Line(lineGeo, new THREE.LineBasicMaterial({color:0x9C917A, transparent:true, opacity:0.85, depthWrite:false})));
   }
   if(label && rings.length){
     // place at the largest ring's centroid, not the first ring or an average across all
