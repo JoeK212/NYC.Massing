@@ -5,6 +5,14 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.4.8 - 2026-07-14 - Reported the v1.4.7 ribbon looked worse, not better — a broken/dotted
+    chain instead of a solid line, live screenshot. Debugged live in Chrome by patching the
+    ribbon's y position directly in the running scene and re-rendering: found ground.position.y
+    is -0.05 while the ribbon was at -0.3, putting it below/behind the ground plane for this
+    app's always-elevated camera, so the ground occluded almost all of it — the visible "dots"
+    were just spots where logarithmicDepthBuffer precision happened to let a triangle through,
+    not a real geometry gap. Confirmed the fix live before touching the file: moved the ribbon
+    to y=0.1, above the ground, which renders as a solid, continuous line at every zoom level.
   v1.4.7 - 2026-07-14 - Reported the borough boundary lines are still very faint/unreadable even
     after v1.4.6 raised opacity to 0.85 (live screenshot). Root cause: the outline was a plain
     THREE.Line/LineBasicMaterial — WebGL only honors linewidth on a handful of platforms (mostly
@@ -630,7 +638,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.7'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.4.8'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -946,14 +954,20 @@ function addBoroughOutlineMeshes(rings, label){
   // (the boundary shape) and structurally cannot have this bug class — each segment is an
   // independent quad, never a single triangulated polygon.
   for(const ring of rings){
-    // backstop alongside the logarithmicDepthBuffer fix above: a bigger separation from the
-    // ground plane (was -0.01, now -0.3 — still visually flush at this scene's scale) gives
-    // more absolute margin before precision loss can matter, and depthWrite:false is standard
-    // practice for a transparent overlay so overlapping segments of the SAME outline don't
-    // z-fight each other regardless of camera distance
+    // v1.4.8: reported live that the v1.4.7 ribbon looked worse than the old faint line — a
+    // broken, dotted chain instead of a solid boundary. Root cause, found by patching this
+    // value live in the running scene and comparing renders: ground.position.y is -0.05, and
+    // this mesh was at -0.3 — BELOW/further-from-camera than the ground for this app's
+    // always-elevated, downward-looking camera. The ground plane was therefore in front of the
+    // outline at almost every pixel, and the "dots" that did show through were just spots where
+    // logarithmicDepthBuffer precision happened to let a triangle win the depth test anyway —
+    // not a geometry gap. depthWrite:false (kept below) never helped, because the problem was
+    // depth TEST outcome, not depth WRITE. Moving the outline to a small positive y — above,
+    // not below, the ground — makes it unambiguously the nearer surface for this camera, so it
+    // renders as a solid line regardless of depth-buffer precision at any distance.
     const ribbonGeo = buildRingRibbonGeometry(ring, BOROUGH_OUTLINE_WIDTH);
     const ribbonMesh = new THREE.Mesh(ribbonGeo, new THREE.MeshBasicMaterial({color:0x9C917A, transparent:true, opacity:0.9, depthWrite:false, side:THREE.DoubleSide}));
-    ribbonMesh.position.y = -0.3;
+    ribbonMesh.position.y = 0.1;
     contextGroup.add(ribbonMesh);
   }
   if(label && rings.length){
