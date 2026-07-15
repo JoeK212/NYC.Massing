@@ -6,6 +6,29 @@
 
   CHANGELOG
   CHANGELOG
+  v1.5.2 - 2026-07-14 - Reported the neighborhood box "does not work — nothing happens when
+    selecting it," expecting to see neighborhoods for each borough. Confirmed live in Chrome
+    that ntaList had loaded correctly (262 real entries) and the dropdown WAS wired up — the
+    actual bug was renderNtaResults()'s own empty-query branch, which just hid the dropdown and
+    returned instead of showing anything, so clicking or focusing an empty box was a dead end
+    by design, not a fetch/wiring failure. Fixed by rendering every neighborhood grouped under
+    its borough as a header when the box is empty, matching what was actually expected — typing
+    still filters to a flat matched list as before. Confirmed live: 262 buttons across the 5
+    correct borough headers, and selectNeighborhood() itself confirmed working end-to-end
+    (Chinatown-Two Bridges → 1,023 real records) once reached.
+  v1.5.1 - 2026-07-14 - Reported "sometimes the pills don't render to mass forms when zoomed
+    in" with a live screenshot (dist 116, far/dot tier). Confirmed live in Chrome, in this
+    order: (1) at their exact dist=116, far/dot tier was CORRECTLY active per the old
+    MID_MAX_DIST=55 — not a malfunction, working as coded; (2) checked all 15848 near/mid-tier
+    meshes' bounding boxes directly in the running scene for degenerate/sliver geometry — only
+    1 bad mesh, so it isn't a broken-geometry bug either; (3) confirmed with the person that the
+    actual complaint is the threshold itself feeling too strict, not lots dropping out
+    randomly. MID_MAX_DIST had never been revisited since v1.0.0 despite the same "raise once
+    verified live" note MAX_LOTS_PER_BOROUGH already carried, and mid tier is cheap
+    frustum-culled box geometry, so there was no real reason it needed to be this tight. Raised
+    55 → 200, confirmed live by patching updateLOD() in the running scene and re-checking
+    nearGroup/midGroup/farGroup.visible at dist=116 — now correctly mid (block massing) instead
+    of far (dot).
   v1.5.0 - 2026-07-14 - Asked whether the bare-looking areas were a real-data gap, and whether
     the app could break down by named area (e.g. "just show Hell's Kitchen" in Manhattan)
     instead of a whole borough. Confirmed live: real per-borough PLUTO counts (42,544 in
@@ -428,6 +451,11 @@
   .searchResults button:hover, .searchResults button:focus-visible{background:var(--paper-deep);}
   .searchResults .ntaBoro{color:var(--ink-soft); font-weight:500; margin-left:6px; font-size:11px;}
   .searchResults .noResults{color:var(--ink-soft); font-weight:500; padding:8px 10px; font-size:12px; cursor:default;}
+  .searchResults .ntaGroupHeader{
+    font-size:10px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase;
+    color:var(--ink-soft); padding:8px 10px 4px; margin-top:2px;
+  }
+  .searchResults .ntaGroupHeader:first-child{margin-top:0;}
 
   .iconBtn{
     width:34px; height:34px; padding:0; border-radius:50%;
@@ -686,7 +714,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.5.0'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.5.2'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1391,7 +1419,17 @@ const labelGroup = new THREE.Group(); // v1.4.5: borough name labels, same load 
 let farPoints = null, farPointRecords = [];
 
 const NEAR_MAX_DIST = 14;
-const MID_MAX_DIST = 55;
+// v1.5.1: reported "sometimes the pills don't render to mass forms when zoomed in" — confirmed
+// live that at dist=116 (their screenshot) far/dot tier was CORRECTLY active per the old
+// MID_MAX_DIST=55, and confirmed the geometry itself has no widespread degenerate meshes (1
+// bad mesh out of 15848 near/mid meshes checked) — so this was never a broken-geometry bug,
+// it was the threshold itself being tuned far tighter than what reads as "zoomed in": their
+// screenshot's dist=116 is over 2x the old cutoff. Never revisited since v1.0.0, same pattern
+// as MAX_LOTS_PER_BOROUGH's own "raise once verified live" note — mid tier is cheap simple-box
+// geometry (frustum-culled like everything else), so there's no perf reason it needed to be
+// this tight. Raised from 55 to 200 so block-level mass forms appear across the range users
+// actually zoom to, not just the last quarter of it.
+const MID_MAX_DIST = 200;
 
 // v1.4.1: reported "limit on how far you can zoom in" + "pan feels broken" when navigating
 // close. Root cause of the zoom limit: the zoom-in floor was hardcoded to 1.5 (=75ft, given
@@ -2083,28 +2121,62 @@ document.getElementById('envelopeToggle').addEventListener('click', (e)=>{
 /* ---- neighborhood search box wiring ---- */
 const ntaSearchInput = document.getElementById('neighborhoodSearch');
 const ntaResultsEl = document.getElementById('neighborhoodResults');
+// v1.5.2: reported nothing happens when clicking the empty box — confirmed live that this
+// early-return was the entire cause: clicking/focusing an empty input never reaches the
+// matches branch below, so the person saw literally nothing, not a slow or broken fetch.
+// "Expecting to see neighborhoods for each borough" is the real design gap this closes: an
+// empty query now renders every neighborhood, grouped under its borough as a header, instead
+// of requiring the person to already know a name to type before anything appears at all.
 function renderNtaResults(query){
   const q = query.trim().toLowerCase();
-  if(!q){ ntaResultsEl.classList.add('hidden'); ntaResultsEl.innerHTML = ''; return; }
-  const matches = ntaList.filter(n => n.ntaname.toLowerCase().includes(q)).slice(0, 8);
   ntaResultsEl.innerHTML = '';
-  if(!matches.length){
-    const div = document.createElement('div');
-    div.className = 'noResults';
-    div.textContent = ntaList.length ? 'No matching neighborhood' : 'Neighborhood list still loading…';
-    ntaResultsEl.appendChild(div);
+  if(!q){
+    if(!ntaList.length){
+      const div = document.createElement('div');
+      div.className = 'noResults';
+      div.textContent = 'Neighborhood list still loading…';
+      ntaResultsEl.appendChild(div);
+    }else{
+      const byBoro = {};
+      for(const n of ntaList){ (byBoro[n.boroname] = byBoro[n.boroname] || []).push(n); }
+      for(const boro of Object.keys(BORONAME_TO_DIGIT)){ // fixed borough order, not fetch order
+        const list = byBoro[boro];
+        if(!list || !list.length) continue;
+        const header = document.createElement('div');
+        header.className = 'ntaGroupHeader';
+        header.textContent = boro;
+        ntaResultsEl.appendChild(header);
+        for(const n of list){
+          const btn = document.createElement('button');
+          btn.textContent = n.ntaname;
+          btn.onclick = () => { ntaResultsEl.classList.add('hidden'); selectNeighborhood(n); };
+          ntaResultsEl.appendChild(btn);
+        }
+      }
+    }
   }else{
-    for(const n of matches){
-      const btn = document.createElement('button');
-      btn.innerHTML = `${escapeHtml(n.ntaname)}<span class="ntaBoro">${escapeHtml(n.boroname)}</span>`;
-      btn.onclick = () => { ntaResultsEl.classList.add('hidden'); selectNeighborhood(n); };
-      ntaResultsEl.appendChild(btn);
+    const matches = ntaList.filter(n => n.ntaname.toLowerCase().includes(q)).slice(0, 8);
+    if(!matches.length){
+      const div = document.createElement('div');
+      div.className = 'noResults';
+      div.textContent = ntaList.length ? 'No matching neighborhood' : 'Neighborhood list still loading…';
+      ntaResultsEl.appendChild(div);
+    }else{
+      for(const n of matches){
+        const btn = document.createElement('button');
+        btn.innerHTML = `${escapeHtml(n.ntaname)}<span class="ntaBoro">${escapeHtml(n.boroname)}</span>`;
+        btn.onclick = () => { ntaResultsEl.classList.add('hidden'); selectNeighborhood(n); };
+        ntaResultsEl.appendChild(btn);
+      }
     }
   }
   ntaResultsEl.classList.remove('hidden');
 }
 ntaSearchInput.addEventListener('input', (e) => renderNtaResults(e.target.value));
-ntaSearchInput.addEventListener('focus', (e) => { if(e.target.value.trim()) renderNtaResults(e.target.value); });
+// both focus AND click — focus alone misses the case where the box is already focused (e.g.
+// tabbed to it) and the person clicks again after an outside click closed the dropdown
+ntaSearchInput.addEventListener('focus', (e) => renderNtaResults(e.target.value));
+ntaSearchInput.addEventListener('click', (e) => renderNtaResults(e.target.value));
 document.addEventListener('click', (e) => {
   if(!document.getElementById('neighborhoodWrap').contains(e.target)) ntaResultsEl.classList.add('hidden');
 });
