@@ -6,6 +6,21 @@
 
   CHANGELOG
   CHANGELOG
+  v1.5.3 - 2026-07-14 - Reported the neighborhood box still didn't function at all after v1.5.2.
+    v1.5.2's diagnosis was real but incomplete — it fixed a genuine dead-end in
+    renderNtaResults(), but every verification of it had been done by calling functions and
+    dispatching events directly in JS, which bypasses real pointer hit-testing entirely. This
+    time verified with an actual simulated mouse click via Chrome, and found the real, complete
+    root cause: header.top > *{pointer-events:none} (deliberate, so the transparent header
+    doesn't block canvas-drag orbit controls underneath it) cascades via CSS inheritance to
+    every descendant, and the existing re-enable rule only covered `button` and `.panel` —
+    .searchWrap (the neighborhood box's wrapper, added fresh in v1.5.0) was never included, so
+    document.elementFromPoint() at the box's own center returned the canvas behind it, not the
+    input — the box was never clickable by a real cursor from the moment it shipped, on any
+    version. Fixed by adding .searchWrap to the existing re-enable selector, alongside button
+    and .panel. Confirmed with a real end-to-end click sequence this time, not a JS shortcut:
+    physical click focused the input, the dropdown rendered all 262 grouped results, and
+    clicking "Chelsea-Hudson Yards" in it loaded 1,926 real records.
   v1.5.2 - 2026-07-14 - Reported the neighborhood box "does not work — nothing happens when
     selecting it," expecting to see neighborhoods for each borough. Confirmed live in Chrome
     that ntaList had loaded correctly (262 real entries) and the dropdown WAS wired up — the
@@ -405,7 +420,7 @@
   }
   :root[data-theme="dark"] header.top{background:linear-gradient(to bottom, rgba(20,23,27,0.94), rgba(20,23,27,0.7) 70%, transparent);}
   header.top > *{pointer-events:none;}
-  header.top button, header.top .panel{pointer-events:auto;}
+  header.top button, header.top .panel, header.top .searchWrap{pointer-events:auto;}
   .headerRow{display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
   .headerRow:first-child{justify-content:space-between;}
   .toolbarRow{gap:10px;}
@@ -714,7 +729,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.5.2'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.5.3'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
