@@ -6,6 +6,33 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.0 - 2026-07-15 - Added two requested features, scoped against real live-checked data
+    before building rather than guessed at: (1) major streets/avenues, and (2) a per-lot
+    "Neighborhood" color mode as a safer alternative to a filled-boundary-polygon approach
+    (this project's own history with coastline ShapeGeometry triangulation failures, v1.2.3/
+    v1.2.4, ruled that out). Streets: NYC Street Centerline (CSCL, resource inkn-q76z),
+    filtered to streetwidth >= 60ft (avenue-width and up), which brings 122,245 citywide
+    segments down to a confirmed-live 6,497 — loaded once at boot, citywide, same "independent
+    of the active borough/neighborhood, toggle don't refetch" posture as the borough outlines,
+    behind a new "Show major streets" toolbar button (off by default). Required a new open-
+    polyline ribbon builder (buildPolylineRibbonGeometry) alongside the existing closed-ring
+    one, and allLineStringPartsWorld() to walk LineString/MultiLineString the_geom the same way
+    allOuterRingsWorld() walks polygons. Neighborhood color mode: reuses the existing NTA
+    boundary resource (9nt8-h7nd) already in the codebase for the v1.5.0 neighborhood search,
+    but this needs all 262 polygons at once instead of one on demand — confirmed live that's a
+    real 4.5MB/~5s cost, so it's lazy-loaded only on first switch into this color mode, not at
+    boot. assignNeighborhoods() does a bbox-prefiltered point-in-polygon pass per lot, memoized
+    onto rec.nta2020 so re-entering the mode on the same records doesn't redo the work.
+    colorForLot/categoryForLot now take the full record (rec) instead of just the lot, since
+    neighborhood coloring needs rec.nta2020, not a lot field — every call site updated
+    accordingly. Legend is now genuinely dynamic (built from whatever neighborhoods are present
+    in the loaded records) rather than the fixed bucket lists the other three color modes use.
+    KNOWN GAP: built and syntax-checked, audit_deploy.js checks written for all of the above,
+    but neither feature has been click-tested in a live browser yet — this project has a track
+    record of things that looked right in code but weren't (the v1.5.2/v1.5.3 neighborhood-box
+    pointer-events bug being the most recent example), and the neighborhood color mode's first
+    load in particular (the 4.5MB fetch + a live point-in-polygon pass over every loaded lot)
+    has never actually run in a browser. Live-test both before trusting this entry.
   v1.5.3 - 2026-07-14 - Reported the neighborhood box still didn't function at all after v1.5.2.
     v1.5.2's diagnosis was real but incomplete — it fixed a genuine dead-end in
     renderNtaResults(), but every verification of it had been done by calling functions and
@@ -633,8 +660,10 @@
       <button data-mode="landuse" class="active">Land Use</button>
       <button data-mode="far">FAR Use</button>
       <button data-mode="year">Year Built</button>
+      <button data-mode="neighborhood">Neighborhood</button>
     </div>
     <button class="btn secondary panel" id="envelopeToggle">Show zoning envelope</button>
+    <button class="btn secondary panel" id="streetsToggle">Show major streets</button>
     <div class="searchWrap" id="neighborhoodWrap">
       <input type="text" id="neighborhoodSearch" class="searchInput" placeholder="Neighborhood…" autocomplete="off">
       <button class="searchClear hidden" id="neighborhoodClear" aria-label="Clear neighborhood filter">×</button>
@@ -729,7 +758,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.5.3'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.0'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -916,6 +945,63 @@ async function fetchNtaGeometry(nta2020){
   const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
   return rows[0] && rows[0].the_geom;
 }
+/* ================= v1.6.0 — neighborhood color mode ================= */
+// Unlike the single-neighborhood search (which fetches one NTA's geometry on demand), this
+// color mode needs every visible lot classified against every NTA at once — so it needs all
+// 262 polygons loaded, not just one. Confirmed live before committing to this: that's a real
+// cost (4.5MB, ~5s), not a cheap lookup, so it's loaded lazily on first use of this color mode
+// rather than at boot like loadNtaList()'s tiny name/code list.
+let ntaGeomCache = {}; // nta2020 -> {ntaname, boroname, rings, bbox}
+let ntaGeomLoaded = false;
+async function loadAllNtaGeometries(){
+  if(ntaGeomLoaded) return;
+  const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=nta2020,ntaname,boroname,the_geom&$limit=400`;
+  const rows = await fetchWithTimeout(url, {timeoutMs: 30000, retries: 2});
+  for(const row of rows){
+    if(!row.the_geom || !row.nta2020) continue;
+    const rings = allOuterRingsWorld(row.the_geom);
+    if(!rings.length) continue;
+    let minX=Infinity, maxX=-Infinity, minZ=Infinity, maxZ=-Infinity;
+    for(const ring of rings) for(const [x,z] of ring){
+      if(x<minX)minX=x; if(x>maxX)maxX=x; if(z<minZ)minZ=z; if(z>maxZ)maxZ=z;
+    }
+    ntaGeomCache[row.nta2020] = {ntaname: row.ntaname, boroname: row.boroname, rings, bbox:{minX,maxX,minZ,maxZ}};
+  }
+  ntaGeomLoaded = true;
+}
+// Assigns each record's containing neighborhood, memoized onto the record itself (rec.nta2020)
+// so switching color modes back and forth doesn't repeat the point-in-polygon work for the
+// same loaded records — a fresh `records` array (new borough/neighborhood load) has fresh rec
+// objects with no nta2020 property yet, so this recomputes automatically when it should. The
+// bbox check on every candidate before the real pointInRings test is what keeps 15,000 lots ×
+// 262 polygons fast — most candidates get rejected by four number comparisons, not a ring walk.
+function assignNeighborhoods(records){
+  const entries = Object.entries(ntaGeomCache);
+  for(const rec of records){
+    if(rec.nta2020 !== undefined) continue;
+    const lot = rec.lot;
+    if(!lot.latitude || !lot.longitude){ rec.nta2020 = null; continue; }
+    const [x,z] = projectLonLat(Number(lot.longitude), Number(lot.latitude));
+    let found = null;
+    for(const [code, entry] of entries){
+      const b = entry.bbox;
+      if(x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue;
+      if(pointInRings(x, z, entry.rings)){ found = code; break; }
+    }
+    rec.nta2020 = found;
+  }
+}
+// Deterministic hash-to-hue so the same neighborhood always gets the same color across
+// sessions and reloads, without hand-picking a palette for 262 named areas.
+function colorForNeighborhood(nta2020){
+  if(!nta2020) return 0x9C9587;
+  let hash = 0;
+  for(let i=0;i<nta2020.length;i++){ hash = (hash*31 + nta2020.charCodeAt(i)) | 0; }
+  const hue = ((hash % 360) + 360) % 360;
+  const c = new THREE.Color();
+  c.setHSL(hue/360, 0.55, 0.5);
+  return c.getHex();
+}
 // Same pagination shape as fetchPlutoBorough, plus a lat/lon rectangle pre-filter — the caller
 // still needs to trim the rectangle down to the real polygon with pointInRings afterward.
 async function fetchPlutoInBBox(boroLetter, bbox){
@@ -1015,6 +1101,51 @@ async function loadBoroughOutlines(){
     boroughOutlinesLoaded = true;
   }catch(err){
     console.warn('Borough outlines failed to load (context layer only, rest of the app is unaffected):', err);
+  }
+}
+/* ================= v1.6.0 — major streets ================= */
+// NYC Street Centerline (CSCL) — real road-bed geometry, 122,245 segments citywide. Confirmed
+// live before committing to this: filtering to streetwidth >= 60 (roughly avenue-width and up)
+// brings that down to 6,497 segments citywide — comparable in scale to the borough outlines,
+// not a performance risk. Loaded once at boot, citywide, same posture as loadBoroughOutlines —
+// independent of which borough/neighborhood is currently loaded, toggled on/off rather than
+// refetched per switch.
+const STREET_RESOURCE = 'inkn-q76z';
+const STREET_MIN_WIDTH_FT = 60;
+const STREET_RIBBON_WIDTH = 0.3; // world units (~15ft) — a visible line, not the real pavement width
+let streetsLoaded = false;
+async function loadMajorStreets(){
+  try{
+    const select = 'the_geom,stname_label,streetwidth';
+    const where = `boroughcode in ('1','2','3','4','5') AND streetwidth >= ${STREET_MIN_WIDTH_FT}`;
+    const rows = [];
+    let offset = 0;
+    const pageSize = 5000;
+    while(true){
+      const url = `${SOCRATA_BASE}${STREET_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(where)}&$limit=${pageSize}&$offset=${offset}`;
+      const page = await fetchWithTimeout(url, {timeoutMs: 20000, retries: 2});
+      rows.push(...page);
+      if(page.length < pageSize) break;
+      offset += pageSize;
+    }
+    const mat = new THREE.MeshBasicMaterial({color:0x8A8471, transparent:true, opacity:0.5, depthWrite:false, side:THREE.DoubleSide});
+    for(const row of rows){
+      if(!row.the_geom) continue;
+      const parts = allLineStringPartsWorld(row.the_geom);
+      for(const part of parts){
+        if(part.length < 2) continue;
+        const geo = buildPolylineRibbonGeometry(part, STREET_RIBBON_WIDTH);
+        const mesh = new THREE.Mesh(geo, mat);
+        // v1.4.8 already taught this codebase the hard way: sits above the ground plane
+        // (-0.05), below the borough-outline ribbon (0.1), so the two layers don't z-fight
+        // each other where a street crosses a borough boundary
+        mesh.position.y = 0.03;
+        streetGroup.add(mesh);
+      }
+    }
+    streetsLoaded = true;
+  }catch(err){
+    console.warn('Major streets failed to load (context layer only, rest of the app is unaffected):', err);
   }
 }
 function ringCentroid(ring){
@@ -1132,6 +1263,36 @@ function buildRingRibbonGeometry(ring, width){
   geo.computeBoundingSphere();
   return geo;
 }
+// v1.6.0: open-polyline sibling of buildRingRibbonGeometry, for street centerlines — same
+// real-mesh-not-a-GL-line reasoning as the comment above, just without wrapping the last point
+// back to the first, since a street isn't a closed loop. The joint-filler square is skipped at
+// index 0 since there's no incoming segment there to join.
+function buildPolylineRibbonGeometry(points, width){
+  const half = width / 2;
+  const positions = [];
+  const n = points.length;
+  for(let i=0; i<n-1; i++){
+    const [x0,z0] = points[i];
+    const [x1,z1] = points[i+1];
+    const dx = x1-x0, dz = z1-z0;
+    const len = Math.hypot(dx,dz) || 1;
+    const nx = -dz/len*half, nz = dx/len*half;
+    positions.push(
+      x0+nx,0,z0+nz,  x0-nx,0,z0-nz,  x1-nx,0,z1-nz,
+      x0+nx,0,z0+nz,  x1-nx,0,z1-nz,  x1+nx,0,z1+nz
+    );
+    if(i > 0){
+      positions.push(
+        x0-half,0,z0-half,  x0+half,0,z0-half,  x0+half,0,z0+half,
+        x0-half,0,z0-half,  x0+half,0,z0+half,  x0-half,0,z0+half
+      );
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.computeBoundingSphere();
+  return geo;
+}
 function addBoroughOutlineMeshes(rings, label){
   // v1.2.4: the filled ShapeGeometry wash is gone. Two rounds of trying to make real NYC
   // coastline data triangulate cleanly both failed for the same underlying reason — even after
@@ -1213,6 +1374,20 @@ function allOuterRingsWorld(geom){
   return rings.map(part => decimateRing(part[0].map(([lon,lat]) => projectLonLat(lon, lat)), 300))
     .filter(r => r.length >= 3);
 }
+// v1.6.0: sibling to allOuterRingsWorld for LineString/MultiLineString geometry (streets), not
+// Polygon/MultiPolygon. No "outer ring" concept for a line — every part of a MultiLineString
+// matters (e.g. a dual-carriageway avenue's two separate roadbeds), so this keeps them all,
+// unlike allOuterRingsWorld dropping holes. No decimation either — street segments are already
+// short (block-length), nothing like the 16,213-point coastline that made decimateRing
+// necessary above.
+function allLineStringPartsWorld(geom){
+  if(!geom || !geom.coordinates) return [];
+  let parts;
+  if(geom.type === 'LineString') parts = [geom.coordinates];
+  else if(geom.type === 'MultiLineString') parts = geom.coordinates;
+  else return [];
+  return parts.map(part => part.map(([lon,lat]) => projectLonLat(lon, lat))).filter(p => p.length >= 2);
+}
 
 // Real NYC borough coastline data comes back at absurd resolution for a context layer — one
 // borough's main landmass alone had 16,213 points. Confirmed live: THREE.ShapeGeometry's
@@ -1286,10 +1461,12 @@ function colorForYearBuilt(lot){
   c.setHSL(0.6 - t*0.55, 0.5, 0.42);
   return c.getHex();
 }
-function colorForLot(lot, mode){
+function colorForLot(rec, mode){
+  const lot = rec.lot;
   if(mode === 'landuse') return colorForLandUse(luCode(lot));
   if(mode === 'far') return colorForFarUtilization(lot);
   if(mode === 'year') return colorForYearBuilt(lot);
+  if(mode === 'neighborhood') return colorForNeighborhood(rec.nta2020);
   return 0x9C9587;
 }
 
@@ -1430,6 +1607,9 @@ const midGroup = new THREE.Group();    // bounding-box prism
 const farGroup = new THREE.Group();    // billboard points
 const envelopeGroup = new THREE.Group();
 const contextGroup = new THREE.Group(); // borough outlines — loaded once, independent of the per-borough lot data
+const streetGroup = new THREE.Group(); // v1.6.0: major streets — same "loaded once, citywide, independent of per-borough lot data" philosophy as contextGroup
+streetGroup.visible = false;
+let showStreets = false; // opt-in, same posture as showEnvelope — a citywide street layer is real clutter risk if it's on by default
 const labelGroup = new THREE.Group(); // v1.4.5: borough name labels, same load pass as the outlines
 let farPoints = null, farPointRecords = [];
 
@@ -1567,7 +1747,7 @@ function initScene(){
   ground.position.y = -0.05;
   scene.add(ground);
 
-  scene.add(nearGroup, midGroup, farGroup, envelopeGroup, contextGroup, labelGroup);
+  scene.add(nearGroup, midGroup, farGroup, envelopeGroup, contextGroup, streetGroup, labelGroup);
 
   updateCameraPosition();
   window.addEventListener('resize', onResize);
@@ -1706,12 +1886,16 @@ function buildBoroughMeshes(records){
   });
   farPointRecords = [];
 
+  // v1.6.0: only runs the (memoized) point-in-polygon assignment when it's actually needed —
+  // switching borough/neighborhood while in a different color mode never pays this cost
+  if(colorMode === 'neighborhood') assignNeighborhoods(records);
+
   const farPositions = [], farColors = [], farSizes = [];
 
   for(const rec of records){
     const lot = rec.lot;
-    if(hiddenCategories.has(categoryForLot(lot))) continue;
-    const color = colorForLot(lot, colorMode);
+    if(hiddenCategories.has(categoryForLot(rec))) continue;
+    const color = colorForLot(rec, colorMode);
     const hasFootprints = rec.footprints && rec.footprints.length > 0;
 
     if(hasFootprints){
@@ -1873,10 +2057,12 @@ function addEnvelopeMesh(rec){
   envelopeGroup.add(new THREE.Mesh(geo, mat));
 }
 
-function categoryForLot(lot){
+function categoryForLot(rec){
+  const lot = rec.lot;
   if(colorMode === 'landuse') return luCode(lot) || '?';
   if(colorMode === 'year') return yearEraKey(lot);
   if(colorMode === 'far') return farBucketKey(lot);
+  if(colorMode === 'neighborhood') return rec.nta2020 || 'unmatched';
   return '?';
 }
 
@@ -1972,12 +2158,31 @@ function legendItemsFor(mode){
     {key:code, label, swatch:colorForLandUse(code)}));
   if(mode === 'far') return FAR_BUCKETS.map(b=>({key:b.key, label:b.label, swatch:b.swatch}));
   if(mode === 'year') return YEAR_ERAS.map(e=>({key:e.key, label:e.label, swatch:yearEraSwatch(e.key)}));
+  if(mode === 'neighborhood'){
+    // dynamic, unlike the three fixed-category modes above — 262 citywide neighborhoods would
+    // be an unusable legend, so this lists only the ones actually present in what's loaded
+    // right now (a handful for a single neighborhood search, tens for a whole borough)
+    const seen = new Map(); // nta2020 -> {label, swatch}
+    let hasUnmatched = false;
+    for(const rec of currentRecords){
+      if(rec.nta2020 === undefined) continue; // buildBoroughMeshes hasn't assigned it yet
+      if(rec.nta2020 === null){ hasUnmatched = true; continue; }
+      if(!seen.has(rec.nta2020)){
+        const entry = ntaGeomCache[rec.nta2020];
+        seen.set(rec.nta2020, {label: entry ? entry.ntaname : rec.nta2020, swatch: colorForNeighborhood(rec.nta2020)});
+      }
+    }
+    const items = [...seen.entries()].map(([code,v]) => ({key:code, label:v.label, swatch:v.swatch}))
+      .sort((a,b) => a.label.localeCompare(b.label));
+    if(hasUnmatched) items.push({key:'unmatched', label:'Unmatched', swatch:0x9C9587});
+    return items;
+  }
   return [];
 }
 function updateLegend(){
   const list = document.getElementById('legendList');
   const title = document.getElementById('legendTitle');
-  const titles = {landuse:'Land Use', far:'FAR Utilization', year:'Year Built'};
+  const titles = {landuse:'Land Use', far:'FAR Utilization', year:'Year Built', neighborhood:'Neighborhood'};
   title.textContent = titles[colorMode] || '';
   const items = legendItemsFor(colorMode);
   list.innerHTML = '';
@@ -2015,6 +2220,11 @@ function updateLegend(){
     const note = document.createElement('div');
     note.className = 'legendNote';
     note.textContent = 'Color still reads as a continuous gradient on the buildings — these bins are for filtering, not a hard color cutoff.';
+    list.appendChild(note);
+  } else if(colorMode === 'neighborhood'){
+    const note = document.createElement('div');
+    note.className = 'legendNote';
+    note.textContent = 'Colors are assigned per neighborhood by name, not a meaningful scale — only useful for telling adjacent areas apart.';
     list.appendChild(note);
   }
 }
@@ -2116,21 +2326,40 @@ document.getElementById('boroughPicker').addEventListener('click', (e)=>{
   document.getElementById('neighborhoodClear').classList.add('hidden');
   selectBorough(Number(btn.dataset.boro));
 });
-document.getElementById('colorModePicker').addEventListener('click', (e)=>{
+document.getElementById('colorModePicker').addEventListener('click', async (e)=>{
   const btn = e.target.closest('button[data-mode]');
   if(!btn) return;
+  const mode = btn.dataset.mode;
   document.querySelectorAll('#colorModePicker button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  colorMode = btn.dataset.mode;
+  colorMode = mode;
   hiddenCategories.clear();
+  if(mode === 'neighborhood' && !ntaGeomLoaded){
+    // confirmed live this is a real ~5s/4.5MB fetch, not instant — show the loading overlay
+    // rather than let the UI sit on stale colors while it happens
+    document.getElementById('loadOverlay').classList.remove('hidden');
+    document.getElementById('loadMsg').textContent = 'Fetching neighborhood boundaries…';
+    try{ await loadAllNtaGeometries(); }
+    catch(err){ console.warn('Neighborhood boundaries failed to load — color mode will show Unmatched', err); }
+    document.getElementById('loadOverlay').classList.add('hidden');
+  }
   updateLegend();
   buildBoroughMeshes(currentRecords);
+  if(mode === 'neighborhood') updateLegend(); // legend items depend on nta2020 assignments buildBoroughMeshes just computed
 });
 document.getElementById('envelopeToggle').addEventListener('click', (e)=>{
   showEnvelope = !showEnvelope;
   e.target.classList.toggle('active', showEnvelope);
   e.target.textContent = showEnvelope ? 'Hide zoning envelope' : 'Show zoning envelope';
   buildBoroughMeshes(currentRecords);
+});
+document.getElementById('streetsToggle').addEventListener('click', (e)=>{
+  // streetGroup is loaded once at boot and never rebuilt per-borough, so this is just a
+  // visibility flip — no fetch, no buildBoroughMeshes call needed
+  showStreets = !showStreets;
+  streetGroup.visible = showStreets;
+  e.target.classList.toggle('active', showStreets);
+  e.target.textContent = showStreets ? 'Hide major streets' : 'Show major streets';
 });
 
 /* ---- neighborhood search box wiring ---- */
@@ -2221,6 +2450,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   initScene();
   updateLegend();
   loadBoroughOutlines();
+  loadMajorStreets();
   loadNtaList();
   selectBorough(1);
 })();
