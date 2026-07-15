@@ -6,6 +6,20 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.6 - 2026-07-15 - REGRESSION, introduced by v1.6.5, live for everyone since that deploy.
+    Reported as "crude, no color swatches, compass gone" — first suspected a stale local file
+    or browser cache, but live-checking the actual deployed site in Chrome and reading computed
+    styles directly (not just eyeballing a screenshot) found the real cause: the v1.6.5 fix
+    itself shipped with a `// comment` inside the <style> block. CSS has no line-comment syntax
+    — only /* ... */ — so that single invalid line corrupted the stylesheet parser from that
+    point onward, and the browser silently dropped most of the CSS that followed it (.swatch,
+    .legendCheck, #navPanel, the compass styling, and more). Confirmed live: the deployed
+    stylesheet had only 47 CSS rules total instead of several hundred. The min-height:0 fix
+    itself was correct — only the comment explaining it broke anything. Fixed by converting it
+    to a valid /* */ block comment; audited the entire <style> block for any other stray `//`
+    and found none. Added an audit_deploy.js check that greps the <style> block for this exact
+    mistake so it can never regress silently again — CSS validity from here on gets checked
+    the same way JS syntax already was, not just visually inspected.
   v1.6.5 - 2026-07-15 - Reported the navigation tools (Recenter/Plan View/zoom/compass) missing
     entirely, with a live screenshot: Manhattan, Neighborhood color mode, major streets on,
     legend showing the full real list of ~40 Manhattan neighborhoods. Root cause: #sidePanel
@@ -589,15 +603,12 @@
     display:flex; flex-direction:column; gap:10px; align-items:stretch;
     width:250px; max-height:calc(100vh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   }
-  // v1.6.5: missing min-height:0 here was a classic flexbox gotcha — a flex column child's
-  // default min-height is `auto`, which means it refuses to shrink below its own content's
-  // natural height, ignoring BOTH the parent's max-height AND this element's own
-  // overflow-y:auto. Invisible for every legend that existed before v1.6.0 (fixed 5-8 item
-  // category buckets, or a single searched neighborhood's small NTA count) — but a
-  // full-borough Neighborhood-mode legend (Manhattan: ~40 real neighborhoods) is tall enough
-  // to blow past #rightRail's max-height, and without this it just kept growing instead of
-  // scrolling internally, pushing #navPanel completely off the bottom of the screen. Confirmed
-  // live: Manhattan + Neighborhood mode + major streets on left Navigate entirely invisible.
+  /* v1.6.6: the v1.6.5 fix below shipped with a // line comment — CSS has no such thing, only
+     /* ... * / block comments. That invalid syntax corrupted the stylesheet parser from this
+     point onward, silently dropping most of the CSS that followed it (.swatch, .legendCheck,
+     #navPanel, the compass styling, and more) — confirmed live: the deployed stylesheet had
+     only 47 CSS rules total when it should have several hundred. min-height:0 here was a real,
+     correct fix (see below) — the comment explaining it is what broke everything after it. */
   #sidePanel{overflow-y:auto; flex:0 1 auto; min-height:0;}
   #sidePanel .legend-item{display:flex; align-items:center; gap:8px; padding:5px 2px; font-family:var(--font-ui); font-size:12.5px; border:none; background:none; width:100%; text-align:left; color:var(--ink);}
   .legend-item.off{opacity:0.55;}
@@ -849,7 +860,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.5'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.6'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
