@@ -6,6 +6,22 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.4 - 2026-07-15 - Asked whether the Neighborhood color mode ties into the borough tabs —
+    specifically whether switching from a Queens neighborhood view to the MN tab could leave
+    the legend still showing Queens. It could: updateLegend() was only ever called from boot,
+    the color-mode picker, and the legend's own click handlers — never from selectBorough() or
+    selectNeighborhood(). Invisible for the other three color modes, since Land Use/FAR/Year
+    Built each list a fixed set of categories regardless of what's loaded. But Neighborhood
+    mode's legend is genuinely built from currentRecords, so switching boroughs or search-
+    selecting a different neighborhood while in that mode re-colored the massing correctly but
+    left the legend panel showing the previous borough's or neighborhood's entries. Fixed by
+    calling updateLegend() right after buildBoroughMeshes() in both selectBorough() and
+    selectNeighborhood() — the same pattern the legend's own Show all/Hide all and per-item
+    toggle handlers already used. Also simplified the color-mode picker's click handler, which
+    had grown a mode-conditional double-call (updateLegend() before AND, only for
+    'neighborhood', again after buildBoroughMeshes) as its own workaround for this same gap —
+    now a single unconditional call after buildBoroughMeshes, consistent everywhere.
+    NOT YET LIVE-TESTED.
   v1.6.3 - 2026-07-15 - Asked whether the in-app help doc was up to date. It wasn't: the Color
     modes section still only listed the original three (Land Use / FAR Use / Year Built) with
     no mention of Neighborhood, added back in v1.6.0. The major streets toggle, also from
@@ -809,7 +825,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.3'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.4'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -2355,6 +2371,11 @@ async function selectBorough(boroDigit){
     currentRecords = records;
     currentBoroDigit = boroDigit;
     buildBoroughMeshes(records);
+    // v1.6.4: only the Neighborhood color mode's legend is actually data-dependent (the other
+    // three list fixed categories regardless of what's loaded), so this was invisible everywhere
+    // except Neighborhood mode — but there, switching boroughs left the legend showing whatever
+    // the PREVIOUS borough/neighborhood had, even though the massing itself was already correct.
+    updateLegend();
     toast(`${BORO_CODE_TO_LETTER[boroDigit]}: ${records.length} lots rendered`);
   }catch(err){
     console.error(err);
@@ -2407,6 +2428,7 @@ async function selectNeighborhood(nta){
     currentRecords = records;
     currentBoroDigit = boroDigit;
     buildBoroughMeshes(records);
+    updateLegend(); // same fix as selectBorough — Neighborhood mode's legend is data-dependent
     toast(`${nta.ntaname}: ${records.length} lots rendered`);
 
     // keep the borough tab row honest — it should reflect where the neighborhood actually is,
@@ -2461,9 +2483,13 @@ document.getElementById('colorModePicker').addEventListener('click', async (e)=>
     catch(err){ console.warn('Neighborhood boundaries failed to load — color mode will show Unmatched', err); }
     document.getElementById('loadOverlay').classList.add('hidden');
   }
-  updateLegend();
   buildBoroughMeshes(currentRecords);
-  if(mode === 'neighborhood') updateLegend(); // legend items depend on nta2020 assignments buildBoroughMeshes just computed
+  updateLegend(); // v1.6.4: always after buildBoroughMeshes, not mode-conditional — same
+                   // consistent pattern now used by selectBorough/selectNeighborhood; the other
+                   // three color modes' legends are static so refreshing them here costs
+                   // nothing, and Neighborhood mode's legend needs the nta2020 assignments
+                   // buildBoroughMeshes just computed, which weren't ready for the old
+                   // pre-build updateLegend() call this replaces
 });
 document.getElementById('envelopeToggle').addEventListener('click', (e)=>{
   showEnvelope = !showEnvelope;
