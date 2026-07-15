@@ -5,6 +5,22 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  CHANGELOG
+  v1.5.0 - 2026-07-14 - Asked whether the bare-looking areas were a real-data gap, and whether
+    the app could break down by named area (e.g. "just show Hell's Kitchen" in Manhattan)
+    instead of a whole borough. Confirmed live: real per-borough PLUTO counts (42,544 in
+    Manhattan up to 324,559 in Queens) vastly exceed MAX_LOTS_PER_BOROUGH=15000, and the fetch
+    has no $order clause, so the truncation isn't an even city-wide thinning — it's whatever
+    order Socrata happens to return, likely clustering by BBL, i.e. real neighborhoods dropped
+    wholesale rather than lightly sampled everywhere. Added a named-neighborhood filter using
+    NYC DCP's own 2020 Neighborhood Tabulation Areas (9nt8-h7nd) — confirmed live that "Hell's
+    Kitchen" exists there by exact name. A search box fetches the chosen neighborhood's real
+    boundary polygon, pre-filters PLUTO by its lat/lon bounding box, then trims to the exact
+    shape with a point-in-polygon test so an adjacent neighborhood's edge lots don't bleed in;
+    footprints are fetched by the resulting exact BBL list rather than a whole-borough fetch, so
+    neighborhood mode isn't exposed to the same cap at all — a neighborhood's real lot count is
+    comfortably under 15000, so what's shown is everything, not another slice. Camera
+    auto-frames on the neighborhood's extent; a × clears back to the full borough view.
   v1.4.8 - 2026-07-14 - Reported the v1.4.7 ribbon looked worse, not better — a broken/dotted
     chain instead of a solid line, live screenshot. Debugged live in Chrome by patching the
     ribbon's y position directly in the running scene and re-rendering: found ground.position.y
@@ -386,6 +402,33 @@
   }
   .segmented button.active{background:var(--card); color:var(--ink); box-shadow:var(--shadow);}
 
+  /* Neighborhood search — a text input + dropdown next to the borough tabs, not a .segmented
+     control like borough/color-mode, since the option set here is ~260 items, not a fixed few */
+  .searchWrap{
+    position:relative; display:flex; align-items:center;
+    background:var(--card); border:1.5px solid var(--line); border-radius:8px; box-shadow:var(--shadow);
+  }
+  .searchInput{
+    font-family:var(--font-ui); font-size:12px; font-weight:600; color:var(--ink);
+    background:transparent; border:none; outline:none; padding:9px 10px; width:170px;
+  }
+  .searchInput::placeholder{color:var(--ink-soft); font-weight:600;}
+  .searchClear{background:transparent; border:none; color:var(--ink-soft); font-weight:700; font-size:15px; line-height:1; padding:0 10px 0 0; cursor:pointer;}
+  .searchClear.hidden{display:none;}
+  .searchResults{
+    position:absolute; top:calc(100% + 6px); left:0; min-width:240px; max-height:280px; overflow-y:auto;
+    background:var(--card); border:1.5px solid var(--line); border-radius:8px; box-shadow:var(--shadow);
+    z-index:30; padding:4px;
+  }
+  .searchResults.hidden{display:none;}
+  .searchResults button{
+    display:block; width:100%; text-align:left; background:transparent; border:none; border-radius:5px;
+    padding:8px 10px; font-family:var(--font-ui); font-size:12px; color:var(--ink); font-weight:600; cursor:pointer;
+  }
+  .searchResults button:hover, .searchResults button:focus-visible{background:var(--paper-deep);}
+  .searchResults .ntaBoro{color:var(--ink-soft); font-weight:500; margin-left:6px; font-size:11px;}
+  .searchResults .noResults{color:var(--ink-soft); font-weight:500; padding:8px 10px; font-size:12px; cursor:default;}
+
   .iconBtn{
     width:34px; height:34px; padding:0; border-radius:50%;
     background:var(--card); border:1.5px solid var(--line); color:var(--ink);
@@ -549,6 +592,11 @@
       <button data-mode="year">Year Built</button>
     </div>
     <button class="btn secondary panel" id="envelopeToggle">Show zoning envelope</button>
+    <div class="searchWrap" id="neighborhoodWrap">
+      <input type="text" id="neighborhoodSearch" class="searchInput" placeholder="Neighborhood…" autocomplete="off">
+      <button class="searchClear hidden" id="neighborhoodClear" aria-label="Clear neighborhood filter">×</button>
+      <div id="neighborhoodResults" class="searchResults hidden"></div>
+    </div>
   </div>
 </header>
 
@@ -638,7 +686,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.4.8'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.5.0'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -795,6 +843,70 @@ async function fetchFootprintsBorough(boroDigit){
   return rows;
 }
 
+/* ================= v1.5.0 — named-neighborhood filtering =================
+   Reported that whole swaths of a borough render bare — traced live to MAX_LOTS_PER_BOROUGH
+   (15000) being a small fraction of any real borough's actual lot count (Manhattan alone has
+   42,544; Queens has 324,559), fetched with no $order clause so the first 15000 rows returned
+   are whatever order Socrata happens to give, not a spatial sample — likely a contiguous BBL
+   range, i.e. entire neighborhoods silently dropped rather than an even city-wide thinning.
+   A named-neighborhood view sidesteps the cap entirely instead of just softening it: a single
+   NTA is small enough that its real lot count is comfortably under 15000, so what's fetched is
+   everything, not a slice. Uses NYC DCP's own 2020 Neighborhood Tabulation Areas (9nt8-h7nd) —
+   confirmed live that "Hell's Kitchen" exists there by exact name (nta2020 'MN0402'), which is
+   what makes a real named-neighborhood picker possible instead of hand-guessed bounding boxes. */
+const NTA_RESOURCE = '9nt8-h7nd';
+const BORONAME_TO_DIGIT = {'Manhattan':1, 'Bronx':2, 'Brooklyn':3, 'Queens':4, 'Staten Island':5};
+let ntaList = []; // [{ntaname, nta2020, boroname}] — loaded once at boot, ~260 rows, cheap
+async function loadNtaList(){
+  try{
+    const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=ntaname,nta2020,boroname&$order=ntaname&$limit=400`;
+    const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
+    ntaList = rows.filter(r => r.ntaname && r.nta2020 && BORONAME_TO_DIGIT[r.boroname]);
+  }catch(err){
+    // fails soft, same posture as loadBoroughOutlines — the neighborhood search box just
+    // returns no results instead of breaking the borough view that already works
+    console.warn('Neighborhood list failed to load — search box will show no results', err);
+  }
+}
+async function fetchNtaGeometry(nta2020){
+  const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=the_geom&$where=nta2020='${nta2020}'&$limit=1`;
+  const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
+  return rows[0] && rows[0].the_geom;
+}
+// Same pagination shape as fetchPlutoBorough, plus a lat/lon rectangle pre-filter — the caller
+// still needs to trim the rectangle down to the real polygon with pointInRings afterward.
+async function fetchPlutoInBBox(boroLetter, bbox){
+  const select = PLUTO_FIELDS.join(',');
+  const where = `borough='${boroLetter}' AND latitude between ${bbox.minLat} and ${bbox.maxLat} AND longitude between ${bbox.minLon} and ${bbox.maxLon}`;
+  const rows = [];
+  let offset = 0;
+  const pageSize = 5000;
+  while(rows.length < MAX_LOTS_PER_BOROUGH){
+    const url = `${SOCRATA_BASE}${PLUTO_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(where)}&$limit=${pageSize}&$offset=${offset}`;
+    const page = await fetchWithTimeout(url);
+    rows.push(...page);
+    if(page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return rows.slice(0, MAX_LOTS_PER_BOROUGH);
+}
+// Fetches footprints for exactly the BBLs asked for, instead of a whole borough — sidesteps
+// fetchFootprintsBorough's own MAX_LOTS_PER_BOROUGH*2 cap, which a neighborhood view would
+// otherwise still be exposed to (footprints has no lat/lon of its own to pre-filter by, only
+// mappluto_bbl, so an exact BBL list is the precise equivalent of the bbox filter above).
+async function fetchFootprintsForBBLs(bbls){
+  if(!bbls.length) return [];
+  const select = FOOTPRINT_FIELDS.join(',');
+  const CHUNK = 400; // keeps each request's URL length reasonable
+  const out = [];
+  for(let i=0; i<bbls.length; i+=CHUNK){
+    const inList = bbls.slice(i, i+CHUNK).map(b => `'${b}'`).join(',');
+    const url = `${SOCRATA_BASE}${FOOTPRINT_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(`mappluto_bbl in (${inList}) AND feature_code='2100'`)}&$limit=${CHUNK}`;
+    out.push(...await fetchWithTimeout(url));
+  }
+  return out;
+}
+
 function cacheKey(boroLetter){ return `massing_cache_${CACHE_VERSION}_${boroLetter}`; }
 function loadFromCache(boroLetter){
   try{
@@ -881,6 +993,41 @@ function ringCentroid(ring){
     return [sx/ring.length, sz/ring.length];
   }
   return [cx/(6*areaSum), cz/(6*areaSum)];
+}
+// Standard ray-casting point-in-polygon, in the same world [x,z] space everything else in this
+// file already projects into — added for v1.5.0's neighborhood filter, which needs to tell
+// whether a lot sits inside a named neighborhood's actual boundary, not just its bounding box.
+// Only tests outer rings, same simplification allOuterRingsWorld already makes for borough
+// outlines (holes aren't meaningful for an inclusion test at this app's scale).
+function pointInRing(x, z, ring){
+  let inside = false;
+  for(let i=0, j=ring.length-1; i<ring.length; j=i++){
+    const [xi,zi] = ring[i], [xj,zj] = ring[j];
+    const crosses = ((zi>z) !== (zj>z)) && (x < (xj-xi)*(z-zi)/(zj-zi) + xi);
+    if(crosses) inside = !inside;
+  }
+  return inside;
+}
+function pointInRings(x, z, rings){
+  return rings.some(ring => pointInRing(x, z, ring));
+}
+// Raw lon/lat bounding box straight from GeoJSON coordinates, before world projection — used to
+// build the PLUTO $where pre-filter (Socrata can't filter by "inside this polygon", only by
+// simple comparisons, so this narrows the fetch to a rectangle first; pointInRings then trims
+// that rectangle down to the real neighborhood shape once the rows are back).
+function lonLatBBoxOfGeom(geom){
+  let minLon=Infinity, maxLon=-Infinity, minLat=Infinity, maxLat=-Infinity;
+  const visit = (coords, depth) => {
+    if(depth === 0){
+      const [lon,lat] = coords;
+      if(lon<minLon) minLon=lon; if(lon>maxLon) maxLon=lon;
+      if(lat<minLat) minLat=lat; if(lat>maxLat) maxLat=lat;
+    } else {
+      coords.forEach(c => visit(c, depth-1));
+    }
+  };
+  visit(geom.coordinates, geom.type === 'Polygon' ? 2 : 3); // Polygon: [ring][pt][lon,lat]; MultiPolygon: +1 level
+  return {minLon,maxLon,minLat,maxLat};
 }
 function buildBoroughLabelSprite(text){
   const canvas = document.createElement('canvas');
@@ -1153,6 +1300,8 @@ let camTarget = new THREE.Vector3(0,0,0);
 let colorMode = 'landuse';
 let showEnvelope = false;
 let currentRecords = [];
+let currentBoroDigit = 1; // tracks the active borough tab, so clearing a neighborhood filter knows what to fall back to
+let activeNeighborhood = null; // {ntaname, nta2020, boroname} while a neighborhood filter is active, else null
 const hiddenCategories = new Set();
 
 // Smooth camera tween — used by Recenter and the north-compass reset so both feel like
@@ -1189,6 +1338,22 @@ function stepCameraTween(now){
 function recenterView(){
   animateCameraTo({azimuth: INITIAL_CAM.azimuth, elevation: INITIAL_CAM.elevation, dist: INITIAL_CAM.dist, target: new THREE.Vector3(0,0,0)});
   inPlanView = false;
+}
+// v1.5.0: frames the camera on a neighborhood's extent after selectNeighborhood loads it —
+// same centroid convention as buildBoroughLabelSprite's placement (largest ring, area-weighted
+// centroid), with distance solved from the ring's bounding-box diagonal against this app's
+// fixed 55-degree FOV (see initScene) instead of a guessed constant, so it works for both a
+// small neighborhood and a large one without retuning.
+function frameCameraOnRings(rings){
+  if(!rings.length) return;
+  let main = rings[0];
+  for(const r of rings){ if(r.length > main.length) main = r; }
+  const [cx, cz] = ringCentroid(main);
+  let minX=Infinity, maxX=-Infinity, minZ=Infinity, maxZ=-Infinity;
+  for(const [x,z] of main){ if(x<minX)minX=x; if(x>maxX)maxX=x; if(z<minZ)minZ=z; if(z>maxZ)maxZ=z; }
+  const span = Math.max(maxX-minX, maxZ-minZ);
+  const dist = Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, (span/2) / Math.tan((55/2)*Math.PI/180) * 1.4));
+  animateCameraTo({azimuth: INITIAL_CAM.azimuth, elevation: INITIAL_CAM.elevation, dist, target: new THREE.Vector3(cx, 0, cz)});
 }
 function resetToNorth(){
   animateCameraTo({azimuth: 0, elevation: camElevation, dist: camDist, target: camTarget});
@@ -1807,6 +1972,7 @@ async function selectBorough(boroDigit){
   try{
     const records = await loadBoroughData(boroDigit);
     currentRecords = records;
+    currentBoroDigit = boroDigit;
     buildBoroughMeshes(records);
     toast(`${BORO_CODE_TO_LETTER[boroDigit]}: ${records.length} lots rendered`);
   }catch(err){
@@ -1822,11 +1988,79 @@ async function selectBorough(boroDigit){
   }
 }
 
+// v1.5.0: loads exactly one named neighborhood — see the fetch functions above for why this
+// sidesteps the borough-wide truncation problem instead of just reducing it.
+async function selectNeighborhood(nta){
+  document.getElementById('loadOverlay').classList.remove('hidden');
+  document.getElementById('inspectPanel').style.display = 'none';
+  try{
+    document.getElementById('loadMsg').textContent = `Fetching ${nta.ntaname} boundary…`;
+    const geom = await fetchNtaGeometry(nta.nta2020);
+    if(!geom) throw new Error('no boundary geometry returned for this neighborhood');
+    const rings = allOuterRingsWorld(geom); // same GeoJSON→world-ring pipeline as the borough outlines
+    const bbox = lonLatBBoxOfGeom(geom);
+
+    const boroDigit = BORONAME_TO_DIGIT[nta.boroname];
+    const boroLetter = BORO_CODE_TO_LETTER[boroDigit];
+    document.getElementById('loadMsg').textContent = `Fetching ${nta.ntaname} tax lots…`;
+    const bboxRows = await fetchPlutoInBBox(boroLetter, bbox);
+    // bbox is a rectangle, the neighborhood isn't — trim to the real polygon so an adjacent
+    // neighborhood's edge lots don't bleed into this view
+    const inside = bboxRows.filter(lot => {
+      if(!lot.latitude || !lot.longitude) return false;
+      const [x,z] = projectLonLat(Number(lot.longitude), Number(lot.latitude));
+      return pointInRings(x, z, rings);
+    });
+
+    document.getElementById('loadMsg').textContent = `Fetching ${nta.ntaname} building footprints…`;
+    const bbls = inside.map(lot => canonBBL(lot.bbl));
+    const footprintRows = await fetchFootprintsForBBLs(bbls);
+    const footprintsByBBL = {};
+    for(const fp of footprintRows){
+      if(!fp.mappluto_bbl) continue;
+      const key = canonBBL(fp.mappluto_bbl);
+      (footprintsByBBL[key] = footprintsByBBL[key] || []).push(fp);
+    }
+    const records = inside.map(lot => ({ lot, footprints: footprintsByBBL[canonBBL(lot.bbl)] || [] }));
+
+    currentRecords = records;
+    currentBoroDigit = boroDigit;
+    buildBoroughMeshes(records);
+    toast(`${nta.ntaname}: ${records.length} lots rendered`);
+
+    // keep the borough tab row honest — it should reflect where the neighborhood actually is,
+    // not whatever borough was selected before this search
+    document.querySelectorAll('#boroughPicker button').forEach(b=>b.classList.toggle('active', Number(b.dataset.boro) === boroDigit));
+
+    frameCameraOnRings(rings);
+    activeNeighborhood = nta;
+    document.getElementById('neighborhoodSearch').value = nta.ntaname;
+    document.getElementById('neighborhoodClear').classList.remove('hidden');
+  }catch(err){
+    console.error(err);
+    toast(`Could not load ${nta.ntaname} — ${err.message}`);
+    document.getElementById('statusBar').textContent = `Load failed: ${err.message}`;
+  }finally{
+    document.getElementById('loadOverlay').classList.add('hidden');
+  }
+}
+function clearNeighborhoodFilter(){
+  activeNeighborhood = null;
+  document.getElementById('neighborhoodSearch').value = '';
+  document.getElementById('neighborhoodClear').classList.add('hidden');
+  document.getElementById('neighborhoodResults').classList.add('hidden');
+  selectBorough(currentBoroDigit);
+}
+
 document.getElementById('boroughPicker').addEventListener('click', (e)=>{
   const btn = e.target.closest('button[data-boro]');
   if(!btn) return;
   document.querySelectorAll('#boroughPicker button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
+  // picking a borough tab directly means "leave neighborhood mode", same as the explicit × button
+  activeNeighborhood = null;
+  document.getElementById('neighborhoodSearch').value = '';
+  document.getElementById('neighborhoodClear').classList.add('hidden');
   selectBorough(Number(btn.dataset.boro));
 });
 document.getElementById('colorModePicker').addEventListener('click', (e)=>{
@@ -1845,6 +2079,36 @@ document.getElementById('envelopeToggle').addEventListener('click', (e)=>{
   e.target.textContent = showEnvelope ? 'Hide zoning envelope' : 'Show zoning envelope';
   buildBoroughMeshes(currentRecords);
 });
+
+/* ---- neighborhood search box wiring ---- */
+const ntaSearchInput = document.getElementById('neighborhoodSearch');
+const ntaResultsEl = document.getElementById('neighborhoodResults');
+function renderNtaResults(query){
+  const q = query.trim().toLowerCase();
+  if(!q){ ntaResultsEl.classList.add('hidden'); ntaResultsEl.innerHTML = ''; return; }
+  const matches = ntaList.filter(n => n.ntaname.toLowerCase().includes(q)).slice(0, 8);
+  ntaResultsEl.innerHTML = '';
+  if(!matches.length){
+    const div = document.createElement('div');
+    div.className = 'noResults';
+    div.textContent = ntaList.length ? 'No matching neighborhood' : 'Neighborhood list still loading…';
+    ntaResultsEl.appendChild(div);
+  }else{
+    for(const n of matches){
+      const btn = document.createElement('button');
+      btn.innerHTML = `${escapeHtml(n.ntaname)}<span class="ntaBoro">${escapeHtml(n.boroname)}</span>`;
+      btn.onclick = () => { ntaResultsEl.classList.add('hidden'); selectNeighborhood(n); };
+      ntaResultsEl.appendChild(btn);
+    }
+  }
+  ntaResultsEl.classList.remove('hidden');
+}
+ntaSearchInput.addEventListener('input', (e) => renderNtaResults(e.target.value));
+ntaSearchInput.addEventListener('focus', (e) => { if(e.target.value.trim()) renderNtaResults(e.target.value); });
+document.addEventListener('click', (e) => {
+  if(!document.getElementById('neighborhoodWrap').contains(e.target)) ntaResultsEl.classList.add('hidden');
+});
+document.getElementById('neighborhoodClear').addEventListener('click', clearNeighborhoodFilter);
 
 /* ================= Theme ================= */
 function currentTheme(){ return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
@@ -1870,6 +2134,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   initScene();
   updateLegend();
   loadBoroughOutlines();
+  loadNtaList();
   selectBorough(1);
 })();
 </script>
