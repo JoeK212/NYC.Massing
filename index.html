@@ -6,6 +6,19 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.1 - 2026-07-15 - Confirmed live in Chrome (261 real records rendered, MN + neighborhood
+    color mode + major streets all active simultaneously) that the neighborhood color mode
+    itself worked end-to-end — the 4.5MB NTA fetch, the point-in-polygon pass, and the dynamic
+    legend all ran correctly in a browser for the first time. But the legend made a real
+    problem visible: colorForNeighborhood()'s hash-to-hue was clustering neighborhoods into
+    only 6-7 visually repeated colors (Chelsea-Hudson Yards, Financial District-Battery Park
+    City, and Hell's Kitchen all read as the same red) instead of 262 distinct ones, because
+    hashing short nta2020 codes that mostly share a borough-prefix ('MN04', 'MN12', ...)
+    doesn't spread evenly across the hue wheel. Fixed by switching to golden-angle (137.508°)
+    spacing indexed by each neighborhood's position in the full sorted code list — still fully
+    deterministic across sessions (same code list, same sort, same index every time — colors
+    survive reloads), but consecutive indices now land far apart on the hue wheel, so
+    alphabetically-adjacent codes never get visually adjacent colors either.
   v1.6.0 - 2026-07-15 - Added two requested features, scoped against real live-checked data
     before building rather than guessed at: (1) major streets/avenues, and (2) a per-lot
     "Neighborhood" color mode as a safer alternative to a filled-boundary-polygon approach
@@ -758,7 +771,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.0'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.1'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -991,14 +1004,36 @@ function assignNeighborhoods(records){
     rec.nta2020 = found;
   }
 }
-// Deterministic hash-to-hue so the same neighborhood always gets the same color across
-// sessions and reloads, without hand-picking a palette for 262 named areas.
+// Confirmed live in v1.6.0: hashing nta2020 (short codes like 'MN04', 'MN12' that mostly
+// share a borough-prefix) doesn't spread evenly across the hue wheel — neighborhoods clustered
+// into 6-7 repeated colors instead of 262 distinct ones, defeating the point of this mode.
+// Fixed in v1.6.1: hue is now each neighborhood's position in the full sorted code list times
+// the golden angle (137.508°) — still fully deterministic across sessions/reloads (same code
+// list, same sort, same index every time), but golden-angle spacing means consecutive indices
+// land far apart on the hue wheel, so alphabetically-adjacent codes never get visually adjacent
+// colors either.
+let ntaHueIndex = null; // nta2020 -> index in the full sorted code list, built once from ntaList
+function neighborhoodHueIndex(nta2020){
+  if(!ntaHueIndex){
+    if(!ntaList.length) return undefined; // ntaList not loaded yet — caller falls back
+    ntaHueIndex = {};
+    [...ntaList].map(n => n.nta2020).sort().forEach((code,i) => { ntaHueIndex[code] = i; });
+  }
+  return ntaHueIndex[nta2020];
+}
 function colorForNeighborhood(nta2020){
   if(!nta2020) return 0x9C9587;
-  let hash = 0;
-  for(let i=0;i<nta2020.length;i++){ hash = (hash*31 + nta2020.charCodeAt(i)) | 0; }
-  const hue = ((hash % 360) + 360) % 360;
   const c = new THREE.Color();
+  const idx = neighborhoodHueIndex(nta2020);
+  if(idx === undefined){
+    // fallback only if ntaList somehow isn't loaded yet — keeps this deterministic per-code
+    // even in that edge case, just without the guaranteed even spacing
+    let hash = 0;
+    for(let i=0;i<nta2020.length;i++){ hash = (hash*31 + nta2020.charCodeAt(i)) | 0; }
+    c.setHSL((((hash % 360) + 360) % 360)/360, 0.55, 0.5);
+    return c.getHex();
+  }
+  const hue = (idx * 137.508) % 360;
   c.setHSL(hue/360, 0.55, 0.5);
   return c.getHex();
 }
