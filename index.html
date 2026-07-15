@@ -6,6 +6,21 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.5 - 2026-07-15 - Reported the navigation tools (Recenter/Plan View/zoom/compass) missing
+    entirely, with a live screenshot: Manhattan, Neighborhood color mode, major streets on,
+    legend showing the full real list of ~40 Manhattan neighborhoods. Root cause: #sidePanel
+    (the legend) and #navPanel share one flex column (#rightRail, from the v1.3.0 layout
+    rework), with #sidePanel set to flex:0 1 auto + overflow-y:auto so it can shrink and scroll
+    internally rather than pushing #navPanel out of view. But it was missing min-height:0 — a
+    flex column child's default min-height is `auto`, which means it refuses to shrink below
+    its own content's natural height, ignoring BOTH the parent's max-height and its own
+    overflow-y:auto. Invisible for every legend that existed before v1.6.0 (fixed 5-8-item
+    category buckets, or a single searched neighborhood's small NTA count, both short enough to
+    never hit the ceiling) — but a full-borough Neighborhood-mode legend is tall enough to blow
+    past it, and without the fix the legend just kept growing instead of scrolling, pushing
+    Navigate completely off the bottom of the screen. Fixed by adding min-height:0 to
+    #sidePanel. NOT YET LIVE-TESTED against the exact reported scenario (only confirmed via
+    reading the CSS/DOM structure, not a real render).
   v1.6.4 - 2026-07-15 - Asked whether the Neighborhood color mode ties into the borough tabs —
     specifically whether switching from a Queens neighborhood view to the MN tab could leave
     the legend still showing Queens. It could: updateLegend() was only ever called from boot,
@@ -574,7 +589,16 @@
     display:flex; flex-direction:column; gap:10px; align-items:stretch;
     width:250px; max-height:calc(100vh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   }
-  #sidePanel{overflow-y:auto; flex:0 1 auto;}
+  // v1.6.5: missing min-height:0 here was a classic flexbox gotcha — a flex column child's
+  // default min-height is `auto`, which means it refuses to shrink below its own content's
+  // natural height, ignoring BOTH the parent's max-height AND this element's own
+  // overflow-y:auto. Invisible for every legend that existed before v1.6.0 (fixed 5-8 item
+  // category buckets, or a single searched neighborhood's small NTA count) — but a
+  // full-borough Neighborhood-mode legend (Manhattan: ~40 real neighborhoods) is tall enough
+  // to blow past #rightRail's max-height, and without this it just kept growing instead of
+  // scrolling internally, pushing #navPanel completely off the bottom of the screen. Confirmed
+  // live: Manhattan + Neighborhood mode + major streets on left Navigate entirely invisible.
+  #sidePanel{overflow-y:auto; flex:0 1 auto; min-height:0;}
   #sidePanel .legend-item{display:flex; align-items:center; gap:8px; padding:5px 2px; font-family:var(--font-ui); font-size:12.5px; border:none; background:none; width:100%; text-align:left; color:var(--ink);}
   .legend-item.off{opacity:0.55;}
   .legendCheck{
@@ -825,7 +849,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.4'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.5'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
