@@ -6,6 +6,36 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.3 - 2026-07-15 - Asked whether the in-app help doc was up to date. It wasn't: the Color
+    modes section still only listed the original three (Land Use / FAR Use / Year Built) with
+    no mention of Neighborhood, added back in v1.6.0. The major streets toggle, also from
+    v1.6.0, had no mention anywhere. And the neighborhood search box — live since v1.5.0, three
+    versions before this doc was last touched — was never documented at all. Added a
+    Neighborhood entry to Color modes (including the first-switch load-time note), a new "Major
+    streets" section, a new "Finding a neighborhood" section, and updated "About the data" to
+    note that a searched neighborhood loads in full, uncapped, unlike a borough's 15,000-lot
+    limit. No functional/rendering code touched — help modal content only.
+  v1.6.2 - 2026-07-15 - Asked about load-time optimization. Found two real, safe wins by
+    reading the actual fetch/boot code rather than guessing: (1) loadBoroughData() awaited
+    fetchPlutoBorough() then fetchFootprintsBorough() one after another, but the footprints
+    fetch only depends on boroDigit, not on the PLUTO result — they were never actually
+    dependent, just written sequentially. Switched to Promise.all(), which roughly halves the
+    network-bound wait on every single borough load (the single most frequent load path in the
+    app: initial boot and every borough-tab switch). (2) The four citywide static layers
+    (borough outlines, major streets, the NTA name list, and — the big one — the full NTA
+    geometry set for the Neighborhood color mode, a confirmed-live ~5s/4.5MB fetch) had zero
+    persistence: they re-fetched from the network on every single page load, unlike the
+    per-borough PLUTO/footprints data which already had a localStorage cache. Added the same
+    pattern for these four, versioned separately (STATIC_CACHE_VERSION) from the per-borough
+    cache since they're a different data shape with no reason to invalidate together — caches
+    the raw fetched rows (not derived state like rings/bbox), same fail-soft-on-quota posture
+    as the existing cache. KNOWN TRADEOFF, not yet verified live: combining this with the
+    existing per-borough caches (which can themselves reach multiple MB per borough) raises
+    real risk of hitting the browser's localStorage quota (commonly 5-10MB/origin) — the
+    existing try/catch swallows a quota-exceeded write, so a full quota degrades gracefully
+    back to network-fetch-every-time rather than breaking the app, but that degradation itself
+    has never been tested live. NOT YET LIVE-TESTED: neither the parallel fetch nor any of the
+    four new caches (including a first-vs-cached-load timing comparison) have run in a browser.
   v1.6.1 - 2026-07-15 - Confirmed live in Chrome (261 real records rendered, MN + neighborhood
     color mode + major streets all active simultaneously) that the neighborhood color mode
     itself worked end-to-end — the 4.5MB NTA fetch, the point-in-polygon pass, and the dynamic
@@ -736,7 +766,7 @@
     </div>
     <div class="helpSection">
       <div class="helpLabel">Color modes</div>
-      <p><b>Land Use</b> — the lot's recorded use category. <b>FAR Use</b> — how built-out a lot is relative to what zoning allows there. <b>Year Built</b> — construction era.</p>
+      <p><b>Land Use</b> — the lot's recorded use category. <b>FAR Use</b> — how built-out a lot is relative to what zoning allows there. <b>Year Built</b> — construction era. <b>Neighborhood</b> — colored by real NYC Neighborhood Tabulation Area boundaries; switching to this mode the first time loads the full neighborhood geometry, which can take a few seconds.</p>
       <p>Click any item in the legend to hide that category from the view — click again to bring it back. "Show all" / "Hide all" toggles everything at once.</p>
     </div>
     <div class="helpSection">
@@ -744,8 +774,16 @@
       <p>The translucent volume above a building is its unbuilt allowed capacity — real lot area × the greatest of its residential, commercial, or community-facility FAR, compared against what's actually built there.</p>
     </div>
     <div class="helpSection">
+      <div class="helpLabel">Major streets</div>
+      <p>Toggle avenue-width-and-up streets on for orientation — useful for placing yourself relative to real cross streets while rotated or zoomed in close.</p>
+    </div>
+    <div class="helpSection">
+      <div class="helpLabel">Finding a neighborhood</div>
+      <p>Use the neighborhood search box to jump straight to a named area (e.g. Hell's Kitchen) instead of browsing its whole borough — every real lot in that neighborhood loads, with no 15,000-lot cap. Clear the search to return to borough view.</p>
+    </div>
+    <div class="helpSection">
       <div class="helpLabel">About the data</div>
-      <p>Real NYC PLUTO tax lot records and Building Footprints, from NYC Open Data — one volume per real lot, not a model. Boroughs load one at a time, capped at 15,000 lots each for performance.</p>
+      <p>Real NYC PLUTO tax lot records and Building Footprints, from NYC Open Data — one volume per real lot, not a model. Boroughs load one at a time, capped at 15,000 lots each for performance; a searched neighborhood loads in full, uncapped.</p>
     </div>
   </div>
 </div>
@@ -771,7 +809,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.1'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.3'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -885,6 +923,28 @@ const MAX_LOTS_PER_BOROUGH = 15000; // v1.0.0 perf guard — raise once real-wor
 const BORO_CODE_TO_LETTER = {1:'MN', 2:'BX', 3:'BK', 4:'QN', 5:'SI'};
 const CACHE_VERSION = 'v2'; // bumped — v1 cached entries were built from the broken f888-ni5f path
 
+// v1.6.2: the four citywide static layers (borough outlines, major streets, NTA name list,
+// full NTA geometries) were re-fetched from the network on every single page load with no
+// persistence at all — unlike the per-borough PLUTO/footprint cache above. The NTA geometry
+// fetch alone is a confirmed-live ~5s/4.5MB cost paid again on every session, even though this
+// data changes essentially never between deploys. Versioned separately from CACHE_VERSION
+// (the per-borough PLUTO/footprints shape) since these are a different data shape entirely and
+// have no reason to invalidate together. Same fail-soft posture as saveToCache: caching is a
+// nice-to-have, so a quota-exceeded write is swallowed, not surfaced as an error.
+const STATIC_CACHE_VERSION = 's1';
+function staticCacheKey(name){ return `massing_static_${STATIC_CACHE_VERSION}_${name}`; }
+function loadFromStaticCache(name){
+  try{
+    const raw = localStorage.getItem(staticCacheKey(name));
+    if(!raw) return null;
+    return JSON.parse(raw);
+  }catch(e){ return null; }
+}
+function saveToStaticCache(name, data){
+  try{ localStorage.setItem(staticCacheKey(name), JSON.stringify(data)); }
+  catch(e){ /* quota exceeded — fine, just skip caching this layer */ }
+}
+
 // Both PLUTO's bbl (SODA number, serializes as "1018150114.00000000") and Building Footprints'
 // mappluto_bbl (SODA text, "1018150114") need this before any join comparison or lookup key.
 function canonBBL(bbl){ return String(Math.round(parseFloat(bbl))); }
@@ -943,10 +1003,13 @@ const NTA_RESOURCE = '9nt8-h7nd';
 const BORONAME_TO_DIGIT = {'Manhattan':1, 'Bronx':2, 'Brooklyn':3, 'Queens':4, 'Staten Island':5};
 let ntaList = []; // [{ntaname, nta2020, boroname}] — loaded once at boot, ~260 rows, cheap
 async function loadNtaList(){
+  const cached = loadFromStaticCache('ntaList');
+  if(cached){ ntaList = cached; return; }
   try{
     const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=ntaname,nta2020,boroname&$order=ntaname&$limit=400`;
     const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
     ntaList = rows.filter(r => r.ntaname && r.nta2020 && BORONAME_TO_DIGIT[r.boroname]);
+    saveToStaticCache('ntaList', ntaList);
   }catch(err){
     // fails soft, same posture as loadBoroughOutlines — the neighborhood search box just
     // returns no results instead of breaking the borough view that already works
@@ -968,8 +1031,15 @@ let ntaGeomCache = {}; // nta2020 -> {ntaname, boroname, rings, bbox}
 let ntaGeomLoaded = false;
 async function loadAllNtaGeometries(){
   if(ntaGeomLoaded) return;
-  const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=nta2020,ntaname,boroname,the_geom&$limit=400`;
-  const rows = await fetchWithTimeout(url, {timeoutMs: 30000, retries: 2});
+  let rows = loadFromStaticCache('ntaGeom');
+  if(!rows){
+    const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=nta2020,ntaname,boroname,the_geom&$limit=400`;
+    rows = await fetchWithTimeout(url, {timeoutMs: 30000, retries: 2});
+    // caches the raw rows, not the derived rings/bbox below — keeps this cache the same shape
+    // as what the network actually returns, and the ring/bbox math is cheap pure JS, not worth
+    // persisting separately from its source data
+    saveToStaticCache('ntaGeom', rows);
+  }
   for(const row of rows){
     if(!row.the_geom || !row.nta2020) continue;
     const rings = allOuterRingsWorld(row.the_geom);
@@ -1089,11 +1159,16 @@ async function loadBoroughData(boroDigit){
   const cached = loadFromCache(boroLetter);
   if(cached){ toast(`${boroLetter} loaded from cache`); return cached; }
 
-  document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} tax lots…`;
-  const plutoRows = await fetchPlutoBorough(boroLetter);
-
-  document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} building footprints…`;
-  const footprintRows = await fetchFootprintsBorough(boroDigit);
+  // v1.6.2: fetchFootprintsBorough only needs boroDigit, not the PLUTO result — these two
+  // fetches never depended on each other, they were just written one after another. Running
+  // them in parallel roughly halves the network-bound wait on every borough load (the single
+  // most frequent load path in the app — initial boot and every borough-tab switch go through
+  // this), instead of paying each fetch's full page-loop time back to back.
+  document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} tax lots + building footprints…`;
+  const [plutoRows, footprintRows] = await Promise.all([
+    fetchPlutoBorough(boroLetter),
+    fetchFootprintsBorough(boroDigit)
+  ]);
 
   document.getElementById('loadMsg').textContent = `Joining ${plutoRows.length} lots to ${footprintRows.length} footprints…`;
   const footprintsByBBL = {};
@@ -1121,8 +1196,12 @@ const BOROUGH_OUTLINE_RESOURCE = 'gthc-hcne';
 let boroughOutlinesLoaded = false;
 async function loadBoroughOutlines(){
   try{
-    const url = `${SOCRATA_BASE}${BOROUGH_OUTLINE_RESOURCE}.json?$limit=10`;
-    const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
+    let rows = loadFromStaticCache('boroughOutlines');
+    if(!rows){
+      const url = `${SOCRATA_BASE}${BOROUGH_OUTLINE_RESOURCE}.json?$limit=10`;
+      rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
+      if(Array.isArray(rows) && rows.length) saveToStaticCache('boroughOutlines', rows);
+    }
     if(!Array.isArray(rows) || !rows.length){ console.warn('Borough outlines: empty response'); return; }
     const nameKey = Object.keys(rows[0]).find(k => /boro.*name|name.*boro/i.test(k)) ||
                     Object.keys(rows[0]).find(k => k.toLowerCase() === 'borough');
@@ -1151,17 +1230,21 @@ const STREET_RIBBON_WIDTH = 0.3; // world units (~15ft) — a visible line, not 
 let streetsLoaded = false;
 async function loadMajorStreets(){
   try{
-    const select = 'the_geom,stname_label,streetwidth';
-    const where = `boroughcode in ('1','2','3','4','5') AND streetwidth >= ${STREET_MIN_WIDTH_FT}`;
-    const rows = [];
-    let offset = 0;
-    const pageSize = 5000;
-    while(true){
-      const url = `${SOCRATA_BASE}${STREET_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(where)}&$limit=${pageSize}&$offset=${offset}`;
-      const page = await fetchWithTimeout(url, {timeoutMs: 20000, retries: 2});
-      rows.push(...page);
-      if(page.length < pageSize) break;
-      offset += pageSize;
+    let rows = loadFromStaticCache('streets');
+    if(!rows){
+      const select = 'the_geom,stname_label,streetwidth';
+      const where = `boroughcode in ('1','2','3','4','5') AND streetwidth >= ${STREET_MIN_WIDTH_FT}`;
+      rows = [];
+      let offset = 0;
+      const pageSize = 5000;
+      while(true){
+        const url = `${SOCRATA_BASE}${STREET_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(where)}&$limit=${pageSize}&$offset=${offset}`;
+        const page = await fetchWithTimeout(url, {timeoutMs: 20000, retries: 2});
+        rows.push(...page);
+        if(page.length < pageSize) break;
+        offset += pageSize;
+      }
+      saveToStaticCache('streets', rows);
     }
     const mat = new THREE.MeshBasicMaterial({color:0x8A8471, transparent:true, opacity:0.5, depthWrite:false, side:THREE.DoubleSide});
     for(const row of rows){
