@@ -6,6 +6,39 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.9 - 2026-07-15 - Asked about load-time optimization again (v1.6.2 covered parallel
+    PLUTO/footprints fetches and static-layer caching). Two more real, safe wins found by
+    reading the actual network path rather than guessing. (1) No preconnect hints existed for
+    either external origin this app depends on — cdnjs.cloudflare.com (the Three.js CDN script)
+    only got contacted once the browser reached the <script src> tag near the end of <body>,
+    and data.cityofnewyork.us only got contacted once boot() fired its first fetch(), both well
+    after HTML parsing starts. Added <link rel="preconnect"> for both so the browser opens both
+    connections (DNS+TCP+TLS) in parallel with parsing the rest of the head/CSS — helps every
+    cold load, including the very first visit, unlike the v1.6.2 caching which mainly helps
+    repeat visits. (2) fetchPlutoBorough()'s pagination loop was sequential, but its page count
+    is fixed and known in advance — MAX_LOTS_PER_BOROUGH/pageSize is always exactly 3 — so every
+    large borough (BK/QN routinely hit the 15,000-lot cap) paid 3 full round-trips back to back
+    for requests that never depended on each other. Now fires all 3 in parallel via Promise.all,
+    turning 3 round-trips of wall-clock time into roughly 1. For a borough with fewer real lots
+    than the cap, this does fire 1-2 more requests than before — but they run alongside the
+    ones that do return data, at no added serial latency. NOT YET LIVE-TESTED.
+  v1.6.8 - 2026-07-15 - Two fixes from live screenshots. (1) Reported the sunset glow added in
+    v1.6.7 reads as a solid black area across most of the visible sky. Root cause wasn't the
+    colors — scene.background stretches the gradient texture across the FULL canvas height, but
+    the ground plane occludes everything below the true 3D horizon line, which in this app's
+    typical oblique framing sits well below screen center. Measured against the reported
+    screenshot's own proportions: only the top ~30% of the texture is ever actually visible;
+    the old mid stop (0.55) and everything warm below it was rendering entirely behind the
+    ground and was never seen. Fixed by front-loading the color transition so navy → violet →
+    amber all arrive within that visible top-30% band instead of being saved for a bottom half
+    that's structurally never on screen. (2) Reported borough name labels (MANHATTAN, BROOKLYN,
+    etc.) read as partially submerged into the ground. THREE.Sprite always renders centered on
+    its position — the label is 26 world units tall (now BOROUGH_LABEL_WORLD_HEIGHT, previously
+    an unshared local const) but was placed at y=3, putting its bottom edge at y=3-13=-10, well
+    below the ground plane (y=-0.05) — roughly half the sprite, including real glyph pixels,
+    not just canvas padding, was rendering below the ground and getting clipped. Fixed by
+    raising the placement so the sprite's bottom edge clears the ground with real headroom.
+    NOT YET LIVE-TESTED.
   v1.6.7 - 2026-07-15 - Reported day mode looks washed out and asked for a sunset gradient in
     night mode. Checked the actual stops: light theme's zenith (#C7D9E6) and horizon (#EDEAE0)
     were both high-lightness, low-saturation pastels only ~10 lightness-units apart, and the
@@ -484,6 +517,16 @@
 <meta name="apple-mobile-web-app-title" content="Massing">
 <meta name="theme-color" content="#EDEAE0" id="themeColorMeta">
 <title>MASSING — NYC building massing from PLUTO</title>
+<!-- v1.6.9: neither of these existed. Every load pays full DNS+TCP+TLS negotiation for both
+     origins from a cold start — cdnjs.cloudflare.com only gets contacted once the browser
+     reaches the <script src> tag near the end of <body>, and data.cityofnewyork.us only gets
+     contacted once boot() fires its first fetch(), both well after this point in parsing.
+     preconnect lets the browser open both connections in parallel with parsing the rest of the
+     head/CSS, so by the time either is actually needed the handshake is already done or well
+     underway — a real ~100-300ms-per-origin saving on the critical path of every cold load,
+     not just repeat visits (the caching added in v1.6.2 mainly helps those instead). -->
+<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+<link rel="preconnect" href="https://data.cityofnewyork.us" crossorigin>
 <style>
   :root{
     --paper: #EDEAE0;
@@ -874,7 +917,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.7'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.9'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1022,16 +1065,24 @@ const FOOTPRINT_FIELDS = ['mappluto_bbl','height_roof','ground_elevation','const
 
 async function fetchPlutoBorough(boroLetter){
   const select = PLUTO_FIELDS.join(',');
-  const rows = [];
-  let offset = 0;
   const pageSize = 5000;
-  while(rows.length < MAX_LOTS_PER_BOROUGH){
-    const url = `${SOCRATA_BASE}${PLUTO_RESOURCE}.json?$select=${select}&$where=borough='${boroLetter}'&$limit=${pageSize}&$offset=${offset}`;
-    const page = await fetchWithTimeout(url);
-    rows.push(...page);
-    if(page.length < pageSize) break;
-    offset += pageSize;
-  }
+  // v1.6.9: MAX_LOTS_PER_BOROUGH/pageSize is a FIXED, known-in-advance page count (3), not an
+  // unknown one — the old sequential while loop paid 3 full round-trips back to back for every
+  // large borough (BK/QN routinely hit the cap), even though each offset request is completely
+  // independent of the others. Firing all 3 in parallel turns that into 1 round-trip's worth of
+  // wall-clock time instead of 3. For a borough with fewer real lots than the cap (e.g. SI),
+  // this does fire 1-2 more requests than the old loop would have — but they run alongside the
+  // ones that do have data, at no serial-latency cost, just a bit of extra (parallel) network
+  // load on Socrata's public API.
+  const pageCount = Math.ceil(MAX_LOTS_PER_BOROUGH / pageSize);
+  const pages = await Promise.all(
+    Array.from({length: pageCount}, (_, i) => {
+      const offset = i * pageSize;
+      const url = `${SOCRATA_BASE}${PLUTO_RESOURCE}.json?$select=${select}&$where=borough='${boroLetter}'&$limit=${pageSize}&$offset=${offset}`;
+      return fetchWithTimeout(url);
+    })
+  );
+  const rows = pages.flat();
   return rows.slice(0, MAX_LOTS_PER_BOROUGH);
 }
 
@@ -1386,6 +1437,7 @@ function lonLatBBoxOfGeom(geom){
   visit(geom.coordinates, geom.type === 'Polygon' ? 2 : 3); // Polygon: [ring][pt][lon,lat]; MultiPolygon: +1 level
   return {minLon,maxLon,minLat,maxLat};
 }
+const BOROUGH_LABEL_WORLD_HEIGHT = 26; // world units — tuned legible around the default recenter dist=750
 function buildBoroughLabelSprite(text){
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -1404,8 +1456,7 @@ function buildBoroughLabelSprite(text){
   const tex = new THREE.CanvasTexture(canvas);
   tex.minFilter = THREE.LinearFilter;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
-  const worldHeight = 26; // world units — tuned legible around the default recenter dist=750
-  sprite.scale.set(worldHeight * (canvas.width/canvas.height), worldHeight, 1);
+  sprite.scale.set(BOROUGH_LABEL_WORLD_HEIGHT * (canvas.width/canvas.height), BOROUGH_LABEL_WORLD_HEIGHT, 1);
   return sprite;
 }
 const BOROUGH_OUTLINE_WIDTH = 2.5; // world units (~125ft at this scene's ~50ft/unit scale) — a real mesh
@@ -1511,7 +1562,14 @@ function addBoroughOutlineMeshes(rings, label){
     const largest = rings.reduce((a,b) => ringArea(b) > ringArea(a) ? b : a, rings[0]);
     const [cx, cz] = ringCentroid(largest);
     const sprite = buildBoroughLabelSprite(label);
-    sprite.position.set(cx, 3, cz);
+    // v1.6.8: reported the bottom of the label text reads as partially submerged into the
+    // ground. THREE.Sprite always renders centered on its position — this sprite is 26 world
+    // units tall (BOROUGH_LABEL_WORLD_HEIGHT), so at the old position.y=3 its bottom edge sat
+    // at y=3-13=-10, well below the ground plane (ground.position.y=-0.05). Roughly half the
+    // sprite, including part of the glyphs themselves (not just canvas padding), was rendering
+    // below the ground and getting clipped. Center now sits high enough that the bottom edge
+    // clears the ground with real headroom.
+    sprite.position.set(cx, BOROUGH_LABEL_WORLD_HEIGHT / 2 + 2, cz);
     labelGroup.add(sprite);
   }
 }
@@ -1844,6 +1902,18 @@ const PAN_MIN_DIST = 3;
 // zenith/horizon pair) so either theme can use 2 or 3+ stops; fog still tracks the LAST stop
 // specifically (the horizon/ground-level color), same reasoning as before — fog only visually
 // matters near the ground at this camera's typical elevation range.
+// v1.6.8: reported the sunset glow reads as a solid black area in most of the visible sky,
+// with a live screenshot. The bug wasn't the colors themselves — it's that scene.background
+// stretches this texture across the ENTIRE render canvas top-to-bottom (y=0 zenith to y=256
+// horizon), but the actual 3D GROUND PLANE occludes everything below the true geometric
+// horizon line, which in this app's typical oblique camera framing sits well below screen
+// center. Confirmed against the reported screenshot's own proportions: the visible sky band
+// is only the top ~30% of the full canvas height, meaning only stops roughly in the 0-to-0.3
+// range were ever actually visible on screen — everything from the old mid stop (0.55) down
+// to the horizon stop (1.0), where all the warm amber color lived, was rendering entirely
+// BEHIND the ground plane and never seen at all. Fixed by front-loading the color transition:
+// the zenith cap is brief, and the violet/amber glow now arrives within that visible top-30%
+// band instead of being saved for a bottom half that's structurally never on screen.
 const SKY_STOPS = {
   light: [
     {at:0,    color:'#5B90C9'},
@@ -1851,9 +1921,11 @@ const SKY_STOPS = {
     {at:1,    color:'#F0E9D8'}
   ],
   dark: [
-    {at:0,    color:'#0A0D1C'},
-    {at:0.55, color:'#3E2C49'},
-    {at:1,    color:'#C9713F'}
+    {at:0,    color:'#12142A'},
+    {at:0.15, color:'#2C2140'},
+    {at:0.32, color:'#6B3B54'},
+    {at:0.55, color:'#C9713F'},
+    {at:1,    color:'#E8944F'}
   ]
 };
 function buildSkyTexture(theme){
