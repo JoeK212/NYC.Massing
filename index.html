@@ -6,6 +6,19 @@
 
   CHANGELOG
   CHANGELOG
+  v1.7.2 - 2026-07-17 - Reported the fog/haze still visibly washing over the ground even after
+    v1.7.1's color decoupling — correctly pushed back rather than accepting a partial fix. The
+    color wasn't the real problem: scene.fog's near distance (1200) is actually LESS than
+    MAX_CAM_DIST (1400), meaning fog was never a subtle distant-horizon effect in this app, it
+    was actively blending in at essentially any normal zoomed-out camera position — no fog color
+    choice could have fixed that, only reducing how much of the visible ground falls inside the
+    fog band. Rather than re-tuning fog distances for the whole scene (which would also change
+    how buildings/streets fade with distance, a bigger change than this complaint asked for),
+    exempted just the ground plane via ground.material.fog = false — it's a flat stylized
+    reference surface, not something that benefits from atmospheric depth cueing the way real
+    building/street geometry does. FOG_COLORS (v1.7.1) and the fog distances themselves are
+    unchanged; buildings and streets still fade with distance as before, only the ground no
+    longer picks up the tint.
   v1.7.1 - 2026-07-17 - Two more bugs from a live v1.7.0 screenshot, Chrome tooling unresponsive
     again so both diagnosed from code. (1) Reported the sunset orange still visibly cast across
     the ground surface even after v1.7.0's ground-color fix — a different bug from v1.6.9's.
@@ -966,7 +979,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.7.1'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.7.2'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -2094,6 +2107,16 @@ function initScene(){
     // rather than giving a recognizable (if upside-down-looking) reference.
     new THREE.MeshBasicMaterial({color: GROUND_COLORS[currentTheme()], side: THREE.DoubleSide})
   );
+  // v1.7.2: reported the fog/haze still visibly washing over the ground even after v1.7.1's
+  // color decoupling. Root cause wasn't the color at all — scene.fog's near distance (1200) is
+  // actually LESS than MAX_CAM_DIST (1400), meaning fog was never a subtle distant-horizon
+  // effect here, it was actively blending in at essentially any normal zoomed-out camera
+  // position. No fog color choice fixes that, only reducing how much of the visible ground
+  // falls inside the fog band. Rather than re-tuning fog distances for the whole scene (which
+  // would also change how buildings/streets fade with distance — a bigger change than this
+  // complaint asked for), exempt just the ground plane: it's a flat stylized reference surface,
+  // not something that benefits from atmospheric depth cueing the way real geometry does.
+  ground.material.fog = false;
   ground.rotation.x = -Math.PI/2;
   ground.position.y = -0.05;
   scene.add(ground);
