@@ -68,4 +68,4 @@ every deploy — see the header comment in that file for the full policy.
 ## Changelog
 
 See the `CHANGELOG` block at the top of `index.html`'s `<script>` for full version history.
-Current version: **v1.7.2**.
+Current version: **v1.7.3**.

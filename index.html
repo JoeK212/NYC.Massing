@@ -6,6 +6,22 @@
 
   CHANGELOG
   CHANGELOG
+  v1.7.3 - 2026-07-17 - Asked whether landmass could be visually differentiated from water — the
+    ground plane was a single flat color for both. Reused the same borough-outline ring data
+    already fetched for the outline ribbons (world-space [x,z] polygons, decimated to ~300
+    pts/part) to paint a real land/water mask onto the ground as a canvas texture, rather than
+    extruding actual 3D geometry. Deliberately avoided THREE.ShapeGeometry/earcut triangulation
+    for the fill — that's the exact thing that broke on this same coastline data in v1.2.3/v1.2.4
+    (decimation introduced self-intersections the ear-clipper couldn't handle). Canvas 2D's own
+    path fill (nonzero winding) never triangulates, so it can't hit that failure mode. Falls back
+    to the old flat land color if the outline fetch hasn't completed yet (or fails), so there's no
+    flash of solid water blue on cold load. Regenerates on every theme toggle alongside the sky
+    gradient. Verified live via claude-in-chrome: rebuilt the exact same canvas logic against the
+    real, currently-live borough ring data in a browser tab and pixel-sampled known locations —
+    Times Square, Prospect Park, and open Atlantic/Long Island Sound water all classified
+    correctly; one edge case near Liberty Island (a narrow bay indentation) misclassified as land,
+    an accepted side effect of the same ring decimation already used for the outline ribbons, not
+    a new bug. audit_deploy.js at 226/226.
   v1.7.2 - 2026-07-17 - Reported the fog/haze still visibly washing over the ground even after
     v1.7.1's color decoupling — correctly pushed back rather than accepting a partial fix. The
     color wasn't the real problem: scene.fog's near distance (1200) is actually LESS than
@@ -979,7 +995,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.7.2'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.7.3'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1389,8 +1405,10 @@ async function loadBoroughOutlines(){
       const rings = allOuterRingsWorld(geom);
       const label = nameKey ? row[nameKey] : '';
       addBoroughOutlineMeshes(rings, label);
+      boroughLandRings.push(...rings);
     }
     boroughOutlinesLoaded = true;
+    applyGroundTexture();
   }catch(err){
     console.warn('Borough outlines failed to load (context layer only, rest of the app is unaffected):', err);
   }
@@ -2002,6 +2020,69 @@ const SKY_STOPS = {
 // orange-on-cream look. Fixed by hoisting `ground` to module scope and giving both the initial
 // creation and every theme toggle the same GROUND_COLORS lookup, so they can never drift apart.
 const GROUND_COLORS = {light: 0xE1DBC7, dark: 0x1B1F25};
+// v1.7.3: reported the ground plane doesn't distinguish landmass from water — it's a single
+// flat color for both. Reuses the same borough-outline ring data already fetched for the
+// outline ribbons (world-space [x,z] polygons, decimated to ~300 pts/part in allOuterRingsWorld)
+// to paint a real land/water mask onto the ground as a canvas texture, instead of extruding
+// actual 3D geometry for a landmass. Deliberately NOT using THREE.ShapeGeometry/earcut
+// triangulation here — that's the exact thing that broke on this same coastline data in
+// v1.2.3/v1.2.4 (decimation introduced new self-intersections that the ear-clipper couldn't
+// handle, even where the source ring had none). Canvas 2D's own path fill uses the nonzero
+// winding rule and never triangulates, so it structurally can't hit that failure mode — worst
+// case on a self-intersecting ring is a slightly odd fill at one seam, never a crash or the
+// shearing artifact reported back then.
+const WATER_COLORS = {light: 0x8FB4D9, dark: 0x0E1420};
+let boroughLandRings = []; // populated once by loadBoroughOutlines(), reused on every theme toggle
+function buildGroundTexture(theme){
+  if(!boroughLandRings.length){
+    // outlines haven't loaded yet (or the fetch failed) — fall back to the old flat land color
+    // rather than flashing solid water blue for however long that takes / forever on failure
+    const canvas = document.createElement('canvas');
+    canvas.width = 2; canvas.height = 2;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = new THREE.Color(GROUND_COLORS[theme]).getStyle();
+    ctx.fillRect(0, 0, 2, 2);
+    return new THREE.CanvasTexture(canvas);
+  }
+  // matches the ground plane's 4000x4000 world-unit extent at 2 world units (~100ft) per pixel —
+  // plenty for a backdrop wash, same "reference layer, not the data itself" reasoning already
+  // used for decimating the outline rings themselves
+  const SIZE = 2048;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE; canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = new THREE.Color(WATER_COLORS[theme]).getStyle();
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  // ground = PlaneGeometry(4000,4000) rotated -PI/2 about X, centered at world (0,0). Worked
+  // through explicitly rather than assumed: that rotation maps local plane-Y to world Z=-localY,
+  // so world X in [-2000,2000] maps straight to u in [0,1], and world Z in [-2000,2000] maps to
+  // v=(2000-Z)/4000 (Z flips relative to v). Same REF_LON/REF_LAT/FEET_PER_WORLD_UNIT projection
+  // as every other real-coordinate layer in this app, so it lines up with the outline ribbons,
+  // buildings, and streets with no separate calibration.
+  ctx.fillStyle = new THREE.Color(GROUND_COLORS[theme]).getStyle();
+  for(const ring of boroughLandRings){
+    if(ring.length < 3) continue;
+    ctx.beginPath();
+    for(let i=0;i<ring.length;i++){
+      const [x,z] = ring[i];
+      const px = (x + 2000) / 4000 * SIZE;
+      const py = (2000 - z) / 4000 * SIZE;
+      if(i===0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+  return new THREE.CanvasTexture(canvas);
+}
+function applyGroundTexture(){
+  if(!ground) return;
+  const theme = currentTheme();
+  if(ground.material.map && ground.material.map.dispose) ground.material.map.dispose();
+  ground.material.map = buildGroundTexture(theme);
+  // base color must be white so the texture's own land/water colors show through unmultiplied
+  ground.material.color.setHex(0xffffff);
+  ground.material.needsUpdate = true;
+}
 // v1.7.1: reported the sunset orange visibly cast across the ground surface even after v1.7.0's
 // ground-color fix. Root cause was different from v1.6.9's bug: fog color was derived from
 // SKY_STOPS' LAST stop — which v1.6.8 intentionally made vivid and saturated (#E8944F) for the
@@ -2032,8 +2113,10 @@ function applySkyBackground(){
   if(!scene.fog) scene.fog = new THREE.Fog(horizonHex, 1200, 3200);
   else scene.fog.color.setHex(horizonHex);
   // ground doesn't exist yet on the very first call (initScene calls this before creating the
-  // ground mesh) — guard so this doesn't throw on that call; every later theme toggle finds it
-  if(ground) ground.material.color.setHex(GROUND_COLORS[theme]);
+  // ground mesh) — applyGroundTexture() itself guards on `ground` for that case; every later
+  // theme toggle (and the first real texture build once outlines load) goes through it too, so
+  // land/water colors and the flat-color fallback can never drift out of sync with the theme
+  applyGroundTexture();
 }
 
 // v1.4.3: reported the zoom-in "limit" and "nav gets stuck/jammed, can't pan" persisted after
