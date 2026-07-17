@@ -6,6 +6,20 @@
 
   CHANGELOG
   CHANGELOG
+  v1.6.7 - 2026-07-15 - Reported day mode looks washed out and asked for a sunset gradient in
+    night mode. Checked the actual stops: light theme's zenith (#C7D9E6) and horizon (#EDEAE0)
+    were both high-lightness, low-saturation pastels only ~10 lightness-units apart, and the
+    horizon nearly matched the light theme's own UI panel cream tone (rgba(237,234,224,...)) —
+    sky and chrome visually blurred together with almost no separation. Re-saturated and
+    deepened the zenith so it actually reads as sky, added a soft mid stop for a less abrupt
+    transition, kept the horizon light but distinct from the panels. Dark theme's near-black
+    zenith/horizon (#0B0E14/#14171B) had no gradient character at all; replaced with a real
+    3-stop dusk gradient — deep navy zenith, dusky violet twilight band, warm amber glow at the
+    horizon. SKY_STOPS is now an ordered stop array instead of a fixed zenith/horizon pair, so
+    either theme can carry 2 or more stops; fog color still tracks whichever stop is LAST in the
+    array (the ground-level color), same reasoning as before. NOT YET LIVE-TESTED — canvas
+    gradients render identically regardless of environment so this is lower-risk than the
+    v1.6.5/v1.6.6 CSS issues, but worth a real look in both themes before calling it done.
   v1.6.6 - 2026-07-15 - REGRESSION, introduced by v1.6.5, live for everyone since that deploy.
     Reported as "crude, no color swatches, compass gone" — first suspected a stale local file
     or browser cache, but live-checking the actual deployed site in Chrome and reading computed
@@ -860,7 +874,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.6'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.6.7'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1815,9 +1829,32 @@ const PAN_MIN_DIST = 3;
 // THREE.Color matching the gradient's HORIZON stop specifically (not the zenith), since fog
 // only ever visually matters near the ground/horizon at this camera's typical elevation range —
 // THREE.Fog itself has no gradient support.
+// v1.6.7: reported day mode reads as washed out, and asked for a sunset gradient in night
+// mode. Confirmed the complaint against the actual stops: the light theme's zenith (#C7D9E6)
+// and horizon (#EDEAE0) were both high-lightness, low-saturation pastels sitting only ~10
+// lightness-units apart, AND the horizon stop nearly matched the light-theme UI panels'
+// own cream tone (see the header/panel rgba(237,234,224,...) rule above) — sky and chrome blurred
+// together with almost no separation, reading as flat/washed out rather than as a real sky.
+// Deepened and re-saturated the zenith so it actually reads as sky, added a soft mid stop for a
+// less abrupt transition, and warmed the horizon slightly so it stays light without visually
+// merging into the UI panels. Dark mode's flat near-black zenith/horizon (#0B0E14/#14171B) had
+// no gradient character at all; replaced with a real 3-stop dusk gradient — deep navy zenith,
+// a dusky violet twilight band, warm amber glow at the horizon — evoking a city skyline at
+// sunset rather than a plain dark background. Stops are now an ordered array (not a fixed
+// zenith/horizon pair) so either theme can use 2 or 3+ stops; fog still tracks the LAST stop
+// specifically (the horizon/ground-level color), same reasoning as before — fog only visually
+// matters near the ground at this camera's typical elevation range.
 const SKY_STOPS = {
-  light: {zenith:'#C7D9E6', horizon:'#EDEAE0'},
-  dark:  {zenith:'#0B0E14', horizon:'#14171B'}
+  light: [
+    {at:0,    color:'#5B90C9'},
+    {at:0.55, color:'#BFD8EA'},
+    {at:1,    color:'#F0E9D8'}
+  ],
+  dark: [
+    {at:0,    color:'#0A0D1C'},
+    {at:0.55, color:'#3E2C49'},
+    {at:1,    color:'#C9713F'}
+  ]
 };
 function buildSkyTexture(theme){
   const stops = SKY_STOPS[theme];
@@ -1825,8 +1862,7 @@ function buildSkyTexture(theme){
   canvas.width = 2; canvas.height = 256;
   const ctx = canvas.getContext('2d');
   const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, stops.zenith);
-  grad.addColorStop(1, stops.horizon);
+  for(const s of stops) grad.addColorStop(s.at, s.color);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 2, 256);
   const tex = new THREE.CanvasTexture(canvas);
@@ -1836,7 +1872,8 @@ function applySkyBackground(){
   const theme = currentTheme() === 'dark' ? 'dark' : 'light';
   if(scene.background && scene.background.dispose) scene.background.dispose();
   scene.background = buildSkyTexture(theme);
-  const horizonHex = new THREE.Color(SKY_STOPS[theme].horizon).getHex();
+  const stops = SKY_STOPS[theme];
+  const horizonHex = new THREE.Color(stops[stops.length - 1].color).getHex();
   if(!scene.fog) scene.fog = new THREE.Fog(horizonHex, 1200, 3200);
   else scene.fog.color.setHex(horizonHex);
 }
