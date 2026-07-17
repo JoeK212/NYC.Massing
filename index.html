@@ -6,6 +6,20 @@
 
   CHANGELOG
   CHANGELOG
+  v1.7.0 - 2026-07-17 - Reported an orange color visibly cast onto the ground surface, live
+    screenshot. The sky and fog were correctly showing dark theme's warm gradient (v1.6.8's
+    fix), but the GROUND plane's own base material color was stuck on light theme's cream
+    (0xE1DBC7). Root cause: ground.material.color was only ever set once, at scene creation in
+    initScene(), from whatever currentTheme() happened to be at boot. Every later theme toggle
+    correctly rebuilt the sky texture and fog color — both already routed through
+    applySkyBackground() — but never touched the ground mesh, since it wasn't even reachable
+    outside initScene() (a local const, not a module-level reference). Warm dark-theme fog
+    blending over a base color still stuck on light theme's cream is exactly what produced the
+    reported look. Fixed by hoisting `ground` to module scope (alongside scene/camera/renderer)
+    and adding a shared GROUND_COLORS lookup that both the initial creation and every theme
+    toggle now read from, so they can't drift apart again. Chrome tooling was unresponsive this
+    session (timed out twice) — diagnosed and fixed from the code directly; NOT YET
+    LIVE-VERIFIED, unlike most fixes since v1.6.6.
   v1.6.9 - 2026-07-15 - Asked about load-time optimization again (v1.6.2 covered parallel
     PLUTO/footprints fetches and static-layer caching). Two more real, safe wins found by
     reading the actual network path rather than guessing. (1) No preconnect hints existed for
@@ -917,7 +931,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.6.9'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.7.0'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1747,7 +1761,7 @@ function yearEraSwatch(key){
 }
 
 /* ================= Three.js scene ================= */
-let scene, camera, renderer;
+let scene, camera, renderer, ground;
 // v1.4.2: reported Recenter's default view doesn't make sense — Manhattan (and the other
 // boroughs) run roughly north-south, but azimuth=0.9 rad (~52°) put the camera southeast of
 // the target, viewing the island across its short axis from the side rather than along its
@@ -1928,6 +1942,18 @@ const SKY_STOPS = {
     {at:1,    color:'#E8944F'}
   ]
 };
+// v1.7.0: reported a warm color visibly bleeding onto the ground surface, live screenshot —
+// the sky/fog were correctly showing dark theme's warm gradient, but the GROUND plane's own
+// base material color was stuck on light theme's cream (0xE1DBC7) the whole time. Root cause:
+// ground.material.color was only ever set once, at scene creation in initScene(), from
+// whatever currentTheme() happened to be at boot — every later theme toggle correctly rebuilt
+// the sky texture and fog color (both go through applySkyBackground()) but never touched the
+// ground mesh at all, since nothing referenced it outside initScene() to begin with (it was a
+// local const, not even reachable from applySkyBackground()). Warm dark-theme fog blending
+// over a base color still stuck on light theme's cream is exactly what produced the reported
+// orange-on-cream look. Fixed by hoisting `ground` to module scope and giving both the initial
+// creation and every theme toggle the same GROUND_COLORS lookup, so they can never drift apart.
+const GROUND_COLORS = {light: 0xE1DBC7, dark: 0x1B1F25};
 function buildSkyTexture(theme){
   const stops = SKY_STOPS[theme];
   const canvas = document.createElement('canvas');
@@ -1948,6 +1974,9 @@ function applySkyBackground(){
   const horizonHex = new THREE.Color(stops[stops.length - 1].color).getHex();
   if(!scene.fog) scene.fog = new THREE.Fog(horizonHex, 1200, 3200);
   else scene.fog.color.setHex(horizonHex);
+  // ground doesn't exist yet on the very first call (initScene calls this before creating the
+  // ground mesh) — guard so this doesn't throw on that call; every later theme toggle finds it
+  if(ground) ground.material.color.setHex(GROUND_COLORS[theme]);
 }
 
 // v1.4.3: reported the zoom-in "limit" and "nav gets stuck/jammed, can't pan" persisted after
@@ -2013,13 +2042,13 @@ function initScene(){
   sun.position.set(80, 120, 60);
   scene.add(sun);
 
-  const ground = new THREE.Mesh(
+  ground = new THREE.Mesh(
     new THREE.PlaneGeometry(4000, 4000),
     // DoubleSide is defense-in-depth for the same v1.4.3 issue as nearGroup below: if the
     // camera ever ends up below grade (e.g. a future camera bug), FrontSide would render the
     // ground invisible from underneath instead of the visible surface, compounding a black-out
     // rather than giving a recognizable (if upside-down-looking) reference.
-    new THREE.MeshBasicMaterial({color: currentTheme() === 'dark' ? 0x1B1F25 : 0xE1DBC7, side: THREE.DoubleSide})
+    new THREE.MeshBasicMaterial({color: GROUND_COLORS[currentTheme()], side: THREE.DoubleSide})
   );
   ground.rotation.x = -Math.PI/2;
   ground.position.y = -0.05;
