@@ -6,6 +6,17 @@
 
   CHANGELOG
   CHANGELOG
+  v1.7.4 - 2026-07-17 - Reported the new land/water ground texture looked "rotated / not aligned"
+    right after v1.7.3 deployed, with live screenshots showing the landmass mask offset from the
+    borough outline ribbons and building clusters. Root cause, confirmed live via claude-in-chrome
+    by patching the running texture and comparing renders: THREE.CanvasTexture defaults to
+    flipY=true, which already inverts the canvas's vertical axis on GPU upload — the v1.7.3
+    formula (py=(2000-z)/4000*SIZE) was ALSO manually flipping Z, so the two flips canceled out
+    the wrong way, mirroring the coastline mask north-south relative to the real geography. Not a
+    rotation at all, despite how it read visually. Fixed by dropping the manual flip
+    (py=(z+2000)/4000*SIZE) — flipY alone now supplies the one flip this mapping needs. Verified
+    live: the corrected mask lines up exactly with the outline ribbon and real building clusters
+    at every zoom checked. audit_deploy.js at 230/230.
   v1.7.3 - 2026-07-17 - Asked whether landmass could be visually differentiated from water — the
     ground plane was a single flat color for both. Reused the same borough-outline ring data
     already fetched for the outline ribbons (world-space [x,z] polygons, decimated to ~300
@@ -995,7 +1006,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.7.3'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.7.4'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -2055,10 +2066,14 @@ function buildGroundTexture(theme){
   ctx.fillRect(0, 0, SIZE, SIZE);
   // ground = PlaneGeometry(4000,4000) rotated -PI/2 about X, centered at world (0,0). Worked
   // through explicitly rather than assumed: that rotation maps local plane-Y to world Z=-localY,
-  // so world X in [-2000,2000] maps straight to u in [0,1], and world Z in [-2000,2000] maps to
-  // v=(2000-Z)/4000 (Z flips relative to v). Same REF_LON/REF_LAT/FEET_PER_WORLD_UNIT projection
-  // as every other real-coordinate layer in this app, so it lines up with the outline ribbons,
-  // buildings, and streets with no separate calibration.
+  // so world X in [-2000,2000] maps straight to u in [0,1]. For V it's easy to double-count the
+  // flip: the vertex UVs alone need v=(2000-Z)/4000, but THREE.CanvasTexture defaults
+  // flipY=true, which ALREADY inverts the canvas's vertical axis on upload (canvas row 0/top
+  // ends up at v=1, not v=0). Manually flipping Z again on top of that double-flips it back to
+  // the wrong orientation — confirmed live via claude-in-chrome (v1.7.3 as originally shipped
+  // rendered the coastline mask mirrored north-south against the real borough outline ribbons,
+  // reported live as "something rotated / not aligned"). The canvas row therefore needs the
+  // DIRECT (unflipped) relationship to world Z — flipY supplies the one flip this mapping needs.
   ctx.fillStyle = new THREE.Color(GROUND_COLORS[theme]).getStyle();
   for(const ring of boroughLandRings){
     if(ring.length < 3) continue;
@@ -2066,7 +2081,7 @@ function buildGroundTexture(theme){
     for(let i=0;i<ring.length;i++){
       const [x,z] = ring[i];
       const px = (x + 2000) / 4000 * SIZE;
-      const py = (2000 - z) / 4000 * SIZE;
+      const py = (z + 2000) / 4000 * SIZE;
       if(i===0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     }
     ctx.closePath();
