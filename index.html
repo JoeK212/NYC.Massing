@@ -17,6 +17,25 @@
     (py=(z+2000)/4000*SIZE) — flipY alone now supplies the one flip this mapping needs. Verified
     live: the corrected mask lines up exactly with the outline ribbon and real building clusters
     at every zoom checked. audit_deploy.js at 230/230.
+    ADDENDUM (same day) - reported the deployed site "takes a long time to open" and the building
+    masses still "don't appear to be aligned correctly." Investigated both live via
+    claude-in-chrome; no further code shipped, version unchanged. Load time: couldn't reproduce a
+    slow load — a full 15,848-lot Manhattan load completed in ~1.1s even with localStorage fully
+    cleared to force a cold fetch. Likely NYC Open Data API variability on their end rather than
+    this app; revisit if it recurs. Alignment: sampled every currently-loaded mid-LOD building's
+    world position against the ground mask and found 91 real lots (0.57% of Manhattan) on "water"
+    pixels. First hypothesis — the mask's 300-pt decimated coastline cutting across real land —
+    turned out to be wrong: swapped in a non-decimated (81,072-point) version of the same rings
+    live and the exact same 91 lots were still flagged, no change at all. Identified them
+    individually instead (BBL + address lookup against currentRecords): U Thant Island (a real
+    small island in the East River), Riverview Terrace (a dead-end street built out over the water
+    at Sutton Place), and a handful of transportation/open-space lots on narrow waterfront strips.
+    The official borough-boundary dataset (gthc-hcne) simply doesn't capture slivers that small at
+    any point count — a source-content gap, not a precision one. Reverted the full-fidelity
+    experiment (real cost, zero measured benefit) back to the decimated rings. This is a genuine
+    but tiny edge effect, not the kind of broad misalignment "form masses don't appear to be
+    aligned correctly" suggests — asked for a screenshot before investigating further, since this
+    likely isn't the actual thing being seen.
   v1.7.3 - 2026-07-17 - Asked whether landmass could be visually differentiated from water — the
     ground plane was a single flat color for both. Reused the same borough-outline ring data
     already fetched for the outline ribbons (world-space [x,z] polygons, decimated to ~300
