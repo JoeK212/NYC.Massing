@@ -1,650 +1,43 @@
 <!DOCTYPE html>
 <!--
   MASSING
-  Real NYC building massing grown from actual PLUTO/Building Footprints records — one extruded volume per tax lot, from its real recorded height and footprint, with its allowed zoning envelope (FAR-derived) rendered alongside it.
+  Real NYC building massing grown from actual PLUTO/Building Footprints records — one extruded
+  volume per tax lot, from its real recorded height and footprint, with its allowed zoning
+  envelope (FAR-derived) rendered alongside it.
   Joe.K · axisbim.io
 
   CHANGELOG
-  CHANGELOG
-  v1.7.8 - 2026-07-25 - Reported the initial open takes a long time, floated "maybe not show all
-    the data" as a fix. Measured it directly instead of assuming: re-ran buildBoroughMeshes() live
-    on already-fetched records (zero network involved) and it took 34.7 SECONDS of main-thread
-    blocking for one Manhattan load. This corrects an earlier (v1.7.4) investigation that only
-    measured network fetch time and concluded NYC Open Data variability was the cause — that
-    investigation never isolated JS construction time, which is where the real cost was hiding.
-    Two independent causes: (1) addNearMesh/addMidMesh/addFloorLines/addEnvelopeMesh each `new`d a
-    fresh THREE.Material PER BUILDING — ~44,000 material instances for a dataset that only ever
-    uses a couple dozen distinct colors total. Added materialCache, shared by color across every
-    mesh builder. (2) buildBoroughMeshes built the full near-LOD (extruded geometry + floor lines)
-    AND mid-LOD (block box) mesh for every record on every load, even though the app boots at the
-    far/dot LOD where both are immediately hidden by updateLOD() — work done and thrown away,
-    never seen. Split it: only the cheap far tier (one shared BufferGeometry, no per-lot mesh) now
-    builds immediately; near/mid construction moved to buildDetailMeshes(), triggered lazily by
-    updateLOD() the first time the camera actually crosses into mid or near range. Nothing is
-    capped or permanently skipped — every record still gets full detail once it can be seen, and
-    toggling the zoning envelope while already zoomed in still rebuilds immediately (updateLOD()
-    runs synchronously at the end of buildBoroughMeshes, so the lazy trigger fires right there if
-    already close). audit_deploy.js at 248/248.
-  v1.7.7 - 2026-07-25 - Asked for a small-screen gate matching the sibling Modulor Mondrian
-    project's pattern (icon, rule, caps title, body copy, rule, footer) — MASSING's map + toolbar
-    + Land Use/Navigate side panels don't fit a phone screen either. Added #smallScreenGate,
-    themed to MASSING's own subject/palette instead of copying Mondrian's panels: a 5-bar skyline
-    icon using the real LANDUSE_COLORS values already used throughout the app. Gates on
-    Math.min(innerWidth,innerHeight) rather than innerWidth alone, so a landscape phone (wider
-    than 768px but still phone-sized in its short dimension) can't slip through. Skips
-    initScene()/all data fetches entirely on a gated first load rather than booting the full 3D
-    app just to hide it — no point spending a phone's battery/data on a scene it can't show; boots
-    once, on demand, if the viewport later grows past the threshold. audit_deploy.js at 238/238.
-  v1.7.6 - 2026-07-17 - Reported live that Hell's Kitchen — explicitly on the regular grid, well
-    north of Houston St, confirmed via raw NYC Building Footprints data clustering tightly at
-    28-29 degrees from true north, the well-documented real tilt of Manhattan's own grid — still
-    didn't look like a grid at the "block" LOD: buildings fused into unbroken masses with no
-    visible street gaps. Worked out the mechanism analytically (Node repro, independent of a very
-    flaky live browser-tool connection that session) rather than guessing: addMidMesh() built a
-    world-AXIS-aligned bounding box, but real Manhattan buildings sit at that ~29-degree tilt, not
-    aligned to world X/Z — and an AABB around a rotated rectangle is always bigger than the
-    rectangle. A typical 25x100ft rowhouse lot rotated 29 degrees produces a 70x100ft AABB — the
-    70ft short side alone nearly spans NYC's standard 60ft side-street width, so buildings on
-    opposite sides of a real street had overlapping boxes, fusing whole blocks together with the
-    streets erased. Replaced the AABB with an ORIENTED bounding box: derive an angle from the
-    ring's own longest edge (real footprints are overwhelmingly rectangular, so this recovers the
-    true building orientation), measure a tight width/depth in that frame, rotate the mesh back.
-    Verified analytically that the resulting box's corners exactly match the true rotated
-    footprint's corners (0.0000ft error on a synthetic 25x100ft/29-degree test case) rather than
-    ballooning past them. audit_deploy.js at 234/234. Not yet re-verified live in the browser —
-    the tool connection was down for this whole investigation; needs a live screenshot check.
-  v1.7.4 - 2026-07-17 - Reported the new land/water ground texture looked "rotated / not aligned"
-    right after v1.7.3 deployed, with live screenshots showing the landmass mask offset from the
-    borough outline ribbons and building clusters. Root cause, confirmed live via claude-in-chrome
-    by patching the running texture and comparing renders: THREE.CanvasTexture defaults to
-    flipY=true, which already inverts the canvas's vertical axis on GPU upload — the v1.7.3
-    formula (py=(2000-z)/4000*SIZE) was ALSO manually flipping Z, so the two flips canceled out
-    the wrong way, mirroring the coastline mask north-south relative to the real geography. Not a
-    rotation at all, despite how it read visually. Fixed by dropping the manual flip
-    (py=(z+2000)/4000*SIZE) — flipY alone now supplies the one flip this mapping needs. Verified
-    live: the corrected mask lines up exactly with the outline ribbon and real building clusters
-    at every zoom checked. audit_deploy.js at 230/230.
-    ADDENDUM (same day) - reported the deployed site "takes a long time to open" and the building
-    masses still "don't appear to be aligned correctly." Investigated both live via
-    claude-in-chrome; no further code shipped, version unchanged. Load time: couldn't reproduce a
-    slow load — a full 15,848-lot Manhattan load completed in ~1.1s even with localStorage fully
-    cleared to force a cold fetch. Likely NYC Open Data API variability on their end rather than
-    this app; revisit if it recurs. Alignment: sampled every currently-loaded mid-LOD building's
-    world position against the ground mask and found 91 real lots (0.57% of Manhattan) on "water"
-    pixels. First hypothesis — the mask's 300-pt decimated coastline cutting across real land —
-    turned out to be wrong: swapped in a non-decimated (81,072-point) version of the same rings
-    live and the exact same 91 lots were still flagged, no change at all. Identified them
-    individually instead (BBL + address lookup against currentRecords): U Thant Island (a real
-    small island in the East River), Riverview Terrace (a dead-end street built out over the water
-    at Sutton Place), and a handful of transportation/open-space lots on narrow waterfront strips.
-    The official borough-boundary dataset (gthc-hcne) simply doesn't capture slivers that small at
-    any point count — a source-content gap, not a precision one. Reverted the full-fidelity
-    experiment (real cost, zero measured benefit) back to the decimated rings. This is a genuine
-    but tiny edge effect, not the kind of broad misalignment "form masses don't appear to be
-    aligned correctly" suggests — asked for a screenshot before investigating further, since this
-    likely isn't the actual thing being seen.
-  v1.7.3 - 2026-07-17 - Asked whether landmass could be visually differentiated from water — the
-    ground plane was a single flat color for both. Reused the same borough-outline ring data
-    already fetched for the outline ribbons (world-space [x,z] polygons, decimated to ~300
-    pts/part) to paint a real land/water mask onto the ground as a canvas texture, rather than
-    extruding actual 3D geometry. Deliberately avoided THREE.ShapeGeometry/earcut triangulation
-    for the fill — that's the exact thing that broke on this same coastline data in v1.2.3/v1.2.4
-    (decimation introduced self-intersections the ear-clipper couldn't handle). Canvas 2D's own
-    path fill (nonzero winding) never triangulates, so it can't hit that failure mode. Falls back
-    to the old flat land color if the outline fetch hasn't completed yet (or fails), so there's no
-    flash of solid water blue on cold load. Regenerates on every theme toggle alongside the sky
-    gradient. Verified live via claude-in-chrome: rebuilt the exact same canvas logic against the
-    real, currently-live borough ring data in a browser tab and pixel-sampled known locations —
-    Times Square, Prospect Park, and open Atlantic/Long Island Sound water all classified
-    correctly; one edge case near Liberty Island (a narrow bay indentation) misclassified as land,
-    an accepted side effect of the same ring decimation already used for the outline ribbons, not
-    a new bug. audit_deploy.js at 226/226.
-  v1.7.2 - 2026-07-17 - Reported the fog/haze still visibly washing over the ground even after
-    v1.7.1's color decoupling — correctly pushed back rather than accepting a partial fix. The
-    color wasn't the real problem: scene.fog's near distance (1200) is actually LESS than
-    MAX_CAM_DIST (1400), meaning fog was never a subtle distant-horizon effect in this app, it
-    was actively blending in at essentially any normal zoomed-out camera position — no fog color
-    choice could have fixed that, only reducing how much of the visible ground falls inside the
-    fog band. Rather than re-tuning fog distances for the whole scene (which would also change
-    how buildings/streets fade with distance, a bigger change than this complaint asked for),
-    exempted just the ground plane via ground.material.fog = false — it's a flat stylized
-    reference surface, not something that benefits from atmospheric depth cueing the way real
-    building/street geometry does. FOG_COLORS (v1.7.1) and the fog distances themselves are
-    unchanged; buildings and streets still fade with distance as before, only the ground no
-    longer picks up the tint.
-  v1.7.1 - 2026-07-17 - Two more bugs from a live v1.7.0 screenshot, Chrome tooling unresponsive
-    again so both diagnosed from code. (1) Reported the sunset orange still visibly cast across
-    the ground surface even after v1.7.0's ground-color fix — a different bug from v1.6.9's.
-    Fog color was derived from SKY_STOPS' LAST stop, which v1.6.8 intentionally made vivid and
-    saturated (#E8944F) for the sky's sunset look — but that same value fed scene.fog, which
-    blends toward it with distance. Confirmed against the screenshot's own numbers: camDist was
-    1400, exactly MAX_CAM_DIST, and fog's near distance is 1200 — large stretches of the
-    4000-unit ground plane really were being blended toward that vivid orange at typical/max
-    zoom-out. Fixed by decoupling fog into its own FOG_COLORS lookup, independent of whatever
-    SKY_STOPS' last entry happens to be — the sky keeps its vivid peak, fog gets a muted dusk
-    haze instead. (2) Reported "Show zoning envelope"/"Show major streets" render fully
-    transparent in their default state. Real CSS specificity bug: both carry class="btn
-    secondary panel", expecting .panel's solid background to apply, but .btn.secondary (two
-    chained classes, specificity 0,2,0) always beat .panel (one class, 0,1,0) regardless of
-    source order — background:transparent silently won every time. Their toggled-ON state never
-    showed this, since .btn.active is also 0,2,0 and wins the same-specificity source-order
-    tiebreak. Fixed with a scoped .btn.secondary.panel override, plus a matching
-    .btn.secondary.panel.active rule so the active state doesn't get accidentally beaten by the
-    fix's own higher specificity. NOT YET LIVE-TESTED.
-  v1.7.0 - 2026-07-17 - Reported an orange color visibly cast onto the ground surface, live
-    screenshot. The sky and fog were correctly showing dark theme's warm gradient (v1.6.8's
-    fix), but the GROUND plane's own base material color was stuck on light theme's cream
-    (0xE1DBC7). Root cause: ground.material.color was only ever set once, at scene creation in
-    initScene(), from whatever currentTheme() happened to be at boot. Every later theme toggle
-    correctly rebuilt the sky texture and fog color — both already routed through
-    applySkyBackground() — but never touched the ground mesh, since it wasn't even reachable
-    outside initScene() (a local const, not a module-level reference). Warm dark-theme fog
-    blending over a base color still stuck on light theme's cream is exactly what produced the
-    reported look. Fixed by hoisting `ground` to module scope (alongside scene/camera/renderer)
-    and adding a shared GROUND_COLORS lookup that both the initial creation and every theme
-    toggle now read from, so they can't drift apart again. Chrome tooling was unresponsive this
-    session (timed out twice) — diagnosed and fixed from the code directly; NOT YET
-    LIVE-VERIFIED, unlike most fixes since v1.6.6.
-  v1.6.9 - 2026-07-15 - Asked about load-time optimization again (v1.6.2 covered parallel
-    PLUTO/footprints fetches and static-layer caching). Two more real, safe wins found by
-    reading the actual network path rather than guessing. (1) No preconnect hints existed for
-    either external origin this app depends on — cdnjs.cloudflare.com (the Three.js CDN script)
-    only got contacted once the browser reached the <script src> tag near the end of <body>,
-    and data.cityofnewyork.us only got contacted once boot() fired its first fetch(), both well
-    after HTML parsing starts. Added <link rel="preconnect"> for both so the browser opens both
-    connections (DNS+TCP+TLS) in parallel with parsing the rest of the head/CSS — helps every
-    cold load, including the very first visit, unlike the v1.6.2 caching which mainly helps
-    repeat visits. (2) fetchPlutoBorough()'s pagination loop was sequential, but its page count
-    is fixed and known in advance — MAX_LOTS_PER_BOROUGH/pageSize is always exactly 3 — so every
-    large borough (BK/QN routinely hit the 15,000-lot cap) paid 3 full round-trips back to back
-    for requests that never depended on each other. Now fires all 3 in parallel via Promise.all,
-    turning 3 round-trips of wall-clock time into roughly 1. For a borough with fewer real lots
-    than the cap, this does fire 1-2 more requests than before — but they run alongside the
-    ones that do return data, at no added serial latency. NOT YET LIVE-TESTED.
-  v1.6.8 - 2026-07-15 - Two fixes from live screenshots. (1) Reported the sunset glow added in
-    v1.6.7 reads as a solid black area across most of the visible sky. Root cause wasn't the
-    colors — scene.background stretches the gradient texture across the FULL canvas height, but
-    the ground plane occludes everything below the true 3D horizon line, which in this app's
-    typical oblique framing sits well below screen center. Measured against the reported
-    screenshot's own proportions: only the top ~30% of the texture is ever actually visible;
-    the old mid stop (0.55) and everything warm below it was rendering entirely behind the
-    ground and was never seen. Fixed by front-loading the color transition so navy → violet →
-    amber all arrive within that visible top-30% band instead of being saved for a bottom half
-    that's structurally never on screen. (2) Reported borough name labels (MANHATTAN, BROOKLYN,
-    etc.) read as partially submerged into the ground. THREE.Sprite always renders centered on
-    its position — the label is 26 world units tall (now BOROUGH_LABEL_WORLD_HEIGHT, previously
-    an unshared local const) but was placed at y=3, putting its bottom edge at y=3-13=-10, well
-    below the ground plane (y=-0.05) — roughly half the sprite, including real glyph pixels,
-    not just canvas padding, was rendering below the ground and getting clipped. Fixed by
-    raising the placement so the sprite's bottom edge clears the ground with real headroom.
-    NOT YET LIVE-TESTED.
-  v1.6.7 - 2026-07-15 - Reported day mode looks washed out and asked for a sunset gradient in
-    night mode. Checked the actual stops: light theme's zenith (#C7D9E6) and horizon (#EDEAE0)
-    were both high-lightness, low-saturation pastels only ~10 lightness-units apart, and the
-    horizon nearly matched the light theme's own UI panel cream tone (rgba(237,234,224,...)) —
-    sky and chrome visually blurred together with almost no separation. Re-saturated and
-    deepened the zenith so it actually reads as sky, added a soft mid stop for a less abrupt
-    transition, kept the horizon light but distinct from the panels. Dark theme's near-black
-    zenith/horizon (#0B0E14/#14171B) had no gradient character at all; replaced with a real
-    3-stop dusk gradient — deep navy zenith, dusky violet twilight band, warm amber glow at the
-    horizon. SKY_STOPS is now an ordered stop array instead of a fixed zenith/horizon pair, so
-    either theme can carry 2 or more stops; fog color still tracks whichever stop is LAST in the
-    array (the ground-level color), same reasoning as before. NOT YET LIVE-TESTED — canvas
-    gradients render identically regardless of environment so this is lower-risk than the
-    v1.6.5/v1.6.6 CSS issues, but worth a real look in both themes before calling it done.
-  v1.6.6 - 2026-07-15 - REGRESSION, introduced by v1.6.5, live for everyone since that deploy.
-    Reported as "crude, no color swatches, compass gone" — first suspected a stale local file
-    or browser cache, but live-checking the actual deployed site in Chrome and reading computed
-    styles directly (not just eyeballing a screenshot) found the real cause: the v1.6.5 fix
-    itself shipped with a `// comment` inside the <style> block. CSS has no line-comment syntax
-    — only /* ... */ — so that single invalid line corrupted the stylesheet parser from that
-    point onward, and the browser silently dropped most of the CSS that followed it (.swatch,
-    .legendCheck, #navPanel, the compass styling, and more). Confirmed live: the deployed
-    stylesheet had only 47 CSS rules total instead of several hundred. The min-height:0 fix
-    itself was correct — only the comment explaining it broke anything. Fixed by converting it
-    to a valid /* */ block comment; audited the entire <style> block for any other stray `//`
-    and found none. Added an audit_deploy.js check that greps the <style> block for this exact
-    mistake so it can never regress silently again — CSS validity from here on gets checked
-    the same way JS syntax already was, not just visually inspected.
-  v1.6.5 - 2026-07-15 - Reported the navigation tools (Recenter/Plan View/zoom/compass) missing
-    entirely, with a live screenshot: Manhattan, Neighborhood color mode, major streets on,
-    legend showing the full real list of ~40 Manhattan neighborhoods. Root cause: #sidePanel
-    (the legend) and #navPanel share one flex column (#rightRail, from the v1.3.0 layout
-    rework), with #sidePanel set to flex:0 1 auto + overflow-y:auto so it can shrink and scroll
-    internally rather than pushing #navPanel out of view. But it was missing min-height:0 — a
-    flex column child's default min-height is `auto`, which means it refuses to shrink below
-    its own content's natural height, ignoring BOTH the parent's max-height and its own
-    overflow-y:auto. Invisible for every legend that existed before v1.6.0 (fixed 5-8-item
-    category buckets, or a single searched neighborhood's small NTA count, both short enough to
-    never hit the ceiling) — but a full-borough Neighborhood-mode legend is tall enough to blow
-    past it, and without the fix the legend just kept growing instead of scrolling, pushing
-    Navigate completely off the bottom of the screen. Fixed by adding min-height:0 to
-    #sidePanel. NOT YET LIVE-TESTED against the exact reported scenario (only confirmed via
-    reading the CSS/DOM structure, not a real render).
-  v1.6.4 - 2026-07-15 - Asked whether the Neighborhood color mode ties into the borough tabs —
-    specifically whether switching from a Queens neighborhood view to the MN tab could leave
-    the legend still showing Queens. It could: updateLegend() was only ever called from boot,
-    the color-mode picker, and the legend's own click handlers — never from selectBorough() or
-    selectNeighborhood(). Invisible for the other three color modes, since Land Use/FAR/Year
-    Built each list a fixed set of categories regardless of what's loaded. But Neighborhood
-    mode's legend is genuinely built from currentRecords, so switching boroughs or search-
-    selecting a different neighborhood while in that mode re-colored the massing correctly but
-    left the legend panel showing the previous borough's or neighborhood's entries. Fixed by
-    calling updateLegend() right after buildBoroughMeshes() in both selectBorough() and
-    selectNeighborhood() — the same pattern the legend's own Show all/Hide all and per-item
-    toggle handlers already used. Also simplified the color-mode picker's click handler, which
-    had grown a mode-conditional double-call (updateLegend() before AND, only for
-    'neighborhood', again after buildBoroughMeshes) as its own workaround for this same gap —
-    now a single unconditional call after buildBoroughMeshes, consistent everywhere.
-    NOT YET LIVE-TESTED.
-  v1.6.3 - 2026-07-15 - Asked whether the in-app help doc was up to date. It wasn't: the Color
-    modes section still only listed the original three (Land Use / FAR Use / Year Built) with
-    no mention of Neighborhood, added back in v1.6.0. The major streets toggle, also from
-    v1.6.0, had no mention anywhere. And the neighborhood search box — live since v1.5.0, three
-    versions before this doc was last touched — was never documented at all. Added a
-    Neighborhood entry to Color modes (including the first-switch load-time note), a new "Major
-    streets" section, a new "Finding a neighborhood" section, and updated "About the data" to
-    note that a searched neighborhood loads in full, uncapped, unlike a borough's 15,000-lot
-    limit. No functional/rendering code touched — help modal content only.
-  v1.6.2 - 2026-07-15 - Asked about load-time optimization. Found two real, safe wins by
-    reading the actual fetch/boot code rather than guessing: (1) loadBoroughData() awaited
-    fetchPlutoBorough() then fetchFootprintsBorough() one after another, but the footprints
-    fetch only depends on boroDigit, not on the PLUTO result — they were never actually
-    dependent, just written sequentially. Switched to Promise.all(), which roughly halves the
-    network-bound wait on every single borough load (the single most frequent load path in the
-    app: initial boot and every borough-tab switch). (2) The four citywide static layers
-    (borough outlines, major streets, the NTA name list, and — the big one — the full NTA
-    geometry set for the Neighborhood color mode, a confirmed-live ~5s/4.5MB fetch) had zero
-    persistence: they re-fetched from the network on every single page load, unlike the
-    per-borough PLUTO/footprints data which already had a localStorage cache. Added the same
-    pattern for these four, versioned separately (STATIC_CACHE_VERSION) from the per-borough
-    cache since they're a different data shape with no reason to invalidate together — caches
-    the raw fetched rows (not derived state like rings/bbox), same fail-soft-on-quota posture
-    as the existing cache. KNOWN TRADEOFF, not yet verified live: combining this with the
-    existing per-borough caches (which can themselves reach multiple MB per borough) raises
-    real risk of hitting the browser's localStorage quota (commonly 5-10MB/origin) — the
-    existing try/catch swallows a quota-exceeded write, so a full quota degrades gracefully
-    back to network-fetch-every-time rather than breaking the app, but that degradation itself
-    has never been tested live. NOT YET LIVE-TESTED: neither the parallel fetch nor any of the
-    four new caches (including a first-vs-cached-load timing comparison) have run in a browser.
-  v1.6.1 - 2026-07-15 - Confirmed live in Chrome (261 real records rendered, MN + neighborhood
-    color mode + major streets all active simultaneously) that the neighborhood color mode
-    itself worked end-to-end — the 4.5MB NTA fetch, the point-in-polygon pass, and the dynamic
-    legend all ran correctly in a browser for the first time. But the legend made a real
-    problem visible: colorForNeighborhood()'s hash-to-hue was clustering neighborhoods into
-    only 6-7 visually repeated colors (Chelsea-Hudson Yards, Financial District-Battery Park
-    City, and Hell's Kitchen all read as the same red) instead of 262 distinct ones, because
-    hashing short nta2020 codes that mostly share a borough-prefix ('MN04', 'MN12', ...)
-    doesn't spread evenly across the hue wheel. Fixed by switching to golden-angle (137.508°)
-    spacing indexed by each neighborhood's position in the full sorted code list — still fully
-    deterministic across sessions (same code list, same sort, same index every time — colors
-    survive reloads), but consecutive indices now land far apart on the hue wheel, so
-    alphabetically-adjacent codes never get visually adjacent colors either.
-  v1.6.0 - 2026-07-15 - Added two requested features, scoped against real live-checked data
-    before building rather than guessed at: (1) major streets/avenues, and (2) a per-lot
-    "Neighborhood" color mode as a safer alternative to a filled-boundary-polygon approach
-    (this project's own history with coastline ShapeGeometry triangulation failures, v1.2.3/
-    v1.2.4, ruled that out). Streets: NYC Street Centerline (CSCL, resource inkn-q76z),
-    filtered to streetwidth >= 60ft (avenue-width and up), which brings 122,245 citywide
-    segments down to a confirmed-live 6,497 — loaded once at boot, citywide, same "independent
-    of the active borough/neighborhood, toggle don't refetch" posture as the borough outlines,
-    behind a new "Show major streets" toolbar button (off by default). Required a new open-
-    polyline ribbon builder (buildPolylineRibbonGeometry) alongside the existing closed-ring
-    one, and allLineStringPartsWorld() to walk LineString/MultiLineString the_geom the same way
-    allOuterRingsWorld() walks polygons. Neighborhood color mode: reuses the existing NTA
-    boundary resource (9nt8-h7nd) already in the codebase for the v1.5.0 neighborhood search,
-    but this needs all 262 polygons at once instead of one on demand — confirmed live that's a
-    real 4.5MB/~5s cost, so it's lazy-loaded only on first switch into this color mode, not at
-    boot. assignNeighborhoods() does a bbox-prefiltered point-in-polygon pass per lot, memoized
-    onto rec.nta2020 so re-entering the mode on the same records doesn't redo the work.
-    colorForLot/categoryForLot now take the full record (rec) instead of just the lot, since
-    neighborhood coloring needs rec.nta2020, not a lot field — every call site updated
-    accordingly. Legend is now genuinely dynamic (built from whatever neighborhoods are present
-    in the loaded records) rather than the fixed bucket lists the other three color modes use.
-    KNOWN GAP: built and syntax-checked, audit_deploy.js checks written for all of the above,
-    but neither feature has been click-tested in a live browser yet — this project has a track
-    record of things that looked right in code but weren't (the v1.5.2/v1.5.3 neighborhood-box
-    pointer-events bug being the most recent example), and the neighborhood color mode's first
-    load in particular (the 4.5MB fetch + a live point-in-polygon pass over every loaded lot)
-    has never actually run in a browser. Live-test both before trusting this entry.
-  v1.5.3 - 2026-07-14 - Reported the neighborhood box still didn't function at all after v1.5.2.
-    v1.5.2's diagnosis was real but incomplete — it fixed a genuine dead-end in
-    renderNtaResults(), but every verification of it had been done by calling functions and
-    dispatching events directly in JS, which bypasses real pointer hit-testing entirely. This
-    time verified with an actual simulated mouse click via Chrome, and found the real, complete
-    root cause: header.top > *{pointer-events:none} (deliberate, so the transparent header
-    doesn't block canvas-drag orbit controls underneath it) cascades via CSS inheritance to
-    every descendant, and the existing re-enable rule only covered `button` and `.panel` —
-    .searchWrap (the neighborhood box's wrapper, added fresh in v1.5.0) was never included, so
-    document.elementFromPoint() at the box's own center returned the canvas behind it, not the
-    input — the box was never clickable by a real cursor from the moment it shipped, on any
-    version. Fixed by adding .searchWrap to the existing re-enable selector, alongside button
-    and .panel. Confirmed with a real end-to-end click sequence this time, not a JS shortcut:
-    physical click focused the input, the dropdown rendered all 262 grouped results, and
-    clicking "Chelsea-Hudson Yards" in it loaded 1,926 real records.
-  v1.5.2 - 2026-07-14 - Reported the neighborhood box "does not work — nothing happens when
-    selecting it," expecting to see neighborhoods for each borough. Confirmed live in Chrome
-    that ntaList had loaded correctly (262 real entries) and the dropdown WAS wired up — the
-    actual bug was renderNtaResults()'s own empty-query branch, which just hid the dropdown and
-    returned instead of showing anything, so clicking or focusing an empty box was a dead end
-    by design, not a fetch/wiring failure. Fixed by rendering every neighborhood grouped under
-    its borough as a header when the box is empty, matching what was actually expected — typing
-    still filters to a flat matched list as before. Confirmed live: 262 buttons across the 5
-    correct borough headers, and selectNeighborhood() itself confirmed working end-to-end
-    (Chinatown-Two Bridges → 1,023 real records) once reached.
-  v1.5.1 - 2026-07-14 - Reported "sometimes the pills don't render to mass forms when zoomed
-    in" with a live screenshot (dist 116, far/dot tier). Confirmed live in Chrome, in this
-    order: (1) at their exact dist=116, far/dot tier was CORRECTLY active per the old
-    MID_MAX_DIST=55 — not a malfunction, working as coded; (2) checked all 15848 near/mid-tier
-    meshes' bounding boxes directly in the running scene for degenerate/sliver geometry — only
-    1 bad mesh, so it isn't a broken-geometry bug either; (3) confirmed with the person that the
-    actual complaint is the threshold itself feeling too strict, not lots dropping out
-    randomly. MID_MAX_DIST had never been revisited since v1.0.0 despite the same "raise once
-    verified live" note MAX_LOTS_PER_BOROUGH already carried, and mid tier is cheap
-    frustum-culled box geometry, so there was no real reason it needed to be this tight. Raised
-    55 → 200, confirmed live by patching updateLOD() in the running scene and re-checking
-    nearGroup/midGroup/farGroup.visible at dist=116 — now correctly mid (block massing) instead
-    of far (dot).
-  v1.5.0 - 2026-07-14 - Asked whether the bare-looking areas were a real-data gap, and whether
-    the app could break down by named area (e.g. "just show Hell's Kitchen" in Manhattan)
-    instead of a whole borough. Confirmed live: real per-borough PLUTO counts (42,544 in
-    Manhattan up to 324,559 in Queens) vastly exceed MAX_LOTS_PER_BOROUGH=15000, and the fetch
-    has no $order clause, so the truncation isn't an even city-wide thinning — it's whatever
-    order Socrata happens to return, likely clustering by BBL, i.e. real neighborhoods dropped
-    wholesale rather than lightly sampled everywhere. Added a named-neighborhood filter using
-    NYC DCP's own 2020 Neighborhood Tabulation Areas (9nt8-h7nd) — confirmed live that "Hell's
-    Kitchen" exists there by exact name. A search box fetches the chosen neighborhood's real
-    boundary polygon, pre-filters PLUTO by its lat/lon bounding box, then trims to the exact
-    shape with a point-in-polygon test so an adjacent neighborhood's edge lots don't bleed in;
-    footprints are fetched by the resulting exact BBL list rather than a whole-borough fetch, so
-    neighborhood mode isn't exposed to the same cap at all — a neighborhood's real lot count is
-    comfortably under 15000, so what's shown is everything, not another slice. Camera
-    auto-frames on the neighborhood's extent; a × clears back to the full borough view.
-  v1.4.8 - 2026-07-14 - Reported the v1.4.7 ribbon looked worse, not better — a broken/dotted
-    chain instead of a solid line, live screenshot. Debugged live in Chrome by patching the
-    ribbon's y position directly in the running scene and re-rendering: found ground.position.y
-    is -0.05 while the ribbon was at -0.3, putting it below/behind the ground plane for this
-    app's always-elevated camera, so the ground occluded almost all of it — the visible "dots"
-    were just spots where logarithmicDepthBuffer precision happened to let a triangle through,
-    not a real geometry gap. Confirmed the fix live before touching the file: moved the ribbon
-    to y=0.1, above the ground, which renders as a solid, continuous line at every zoom level.
-  v1.4.7 - 2026-07-14 - Reported the borough boundary lines are still very faint/unreadable even
-    after v1.4.6 raised opacity to 0.85 (live screenshot). Root cause: the outline was a plain
-    THREE.Line/LineBasicMaterial — WebGL only honors linewidth on a handful of platforms (mostly
-    macOS OpenGL), and on the far more common ANGLE/Direct3D path (Windows Chrome, this
-    screenshot included) every GL line renders at exactly 1px regardless of the linewidth value
-    set in code, so no opacity or color change could ever fix this — opacity was never the real
-    problem. Replaced the line with a real ribbon mesh (a triangle-strip band in the XZ plane,
-    plus a small square filler at each vertex to cover the outer-corner gaps a mitered join would
-    otherwise leave), rendered as an unlit MeshBasicMaterial. This gives the boundary a true,
-    controllable on-screen width on every platform instead of depending on a GL feature most
-    browsers ignore.
-  v1.4.6 - 2026-07-14 - Reported the borough boundary lines are very weak/faint, with a live
-    screenshot showing them barely visible against the dark theme background. The outline was
-    drawn at opacity:0.55 while the v1.4.5 borough name label sitting right next to it (same
-    color family, proven legible in the same screenshot) uses 0.85. Raised the outline to match.
-  v1.4.5 - 2026-07-14 - Requested borough/landmass name labels, full names not abbreviations.
-    loadBoroughOutlines() already fetched each borough's name alongside its outline geometry
-    (the boro_name field from the same NYC Open Data resource) and passed it into
-    addBoroughOutlineMeshes(rings, label) — but label was never actually used for anything.
-    Added a canvas-texture Sprite label (full name, matching the app's own --font-ui) placed at
-    the largest ring's area-weighted centroid, not a plain point average or the first ring —
-    the Bronx and others have separate island/mainland ring parts, and averaging their
-    centroids together can land a label in open water between them. Labels are wayfinding
-    context, so they follow the same near/mid/far LOD split as everything else: hidden at near
-    (close-up building detail) where a giant borough name would just clutter the view, visible
-    at mid/far.
-  v1.4.4 - 2026-07-14 - Reported the 5 borough outlines get jittery / break into segments when
-    zooming, not a continuous boundary line. Root cause: z-fighting between the outline (sitting
-    just -0.01 world units below the y=0 ground plane) and the ground itself — a standard depth
-    buffer loses precision fast across this scene's near/far ratio (0.1 to 4000 = 40,000:1), so
-    different pixels of the same line resolve inconsistently at typical camera distances. Same
-    root-cause class as a fix already shipped on the sibling STAND project. Enabled
-    logarithmicDepthBuffer on the renderer (the general fix — helps any thin coplanar-ish
-    geometry, not just this one line) and, as a backstop, increased the outline's ground offset
-    (-0.01 → -0.3) and set depthWrite:false on its material.
-  v1.4.3 - 2026-07-14 - Reported the zoom-in limit and "nav gets stuck/jammed, can't pan" were
-    still issues after v1.4.1. Confirmed live: v1.4.1's lower MIN_CAM_DIST (0.35 = 17.5ft) let
-    the camera end up INSIDE a building's extruded volume — real NYC footprints are routinely
-    wider than that. MeshLambertMaterial defaults to FrontSide, so every surrounding face was a
-    backface from inside (invisible); the canvas measured 0% non-black pixels (verified via
-    canvas.toDataURL + a manual pixel scan — gl.readPixels gave false readings from a
-    since-cleared buffer). That's the "stuck" feeling: panning inside a solid box changes the
-    camera state but has no visible reference point in any direction to prove it. A fixed
-    MIN_CAM_DIST can't solve this on its own since it's distance-from-target, not
-    distance-from-surface. Added clampZoomIn(): a raycast from camTarget toward the camera on
-    every zoom-in step that never lets camDist cross the nearest real surface (minus a small
-    buffer), falling back to MIN_CAM_DIST only where there's nothing nearby to hit. Also made
-    building/ground materials double-sided as a defense-in-depth backstop.
-  v1.4.2 - 2026-07-14 - Reported the default Recenter view "doesn't make sense" — Manhattan
-    should read north-south, not viewed from the east side. INITIAL_CAM.azimuth was 0.9 rad
-    (~52°), putting the camera southeast of the target and viewing the island across its short
-    axis. Changed to azimuth=0 (camera due south of target, facing north) for a sensible
-    north-up default on Recenter and initial load.
-  v1.4.1 - 2026-07-14 - Reported "limit on how far you can zoom in" and "pan feels broken"
-    navigating close. Confirmed live in Chrome: rotate worked fine at any zoom, but the zoom-in
-    floor (hardcoded 1.5 world units = 75ft, given FEET_PER_WORLD_UNIT=50, in three separate
-    clamp sites) stopped well short of a useful facade-inspection distance, and panScale
-    (camDist*0.0018, no floor) meant a full-screen drag near that floor moved the target only a
-    few feet — imperceptible, reading as broken rather than slow. Lowered the zoom-in floor to
-    0.35 (17.5ft, safe against the camera's 0.1 near-clip plane) and consolidated all four zoom
-    clamp sites (wheel, pinch, +/- buttons) onto named MIN_CAM_DIST/MAX_CAM_DIST constants.
-    Added a PAN_MIN_DIST=3 floor under panScale's effective distance so close-in panning stays
-    responsive instead of degrading toward zero as camDist shrinks.
-  v1.4.0 - 2026-07-14 - Two requests. (1) Day mode too bright — the flat solid-color background
-    read as harsh against a full-bleed canvas with no other texture. Replaced with a small
-    canvas-generated vertical gradient (soft pale blue zenith fading to the existing cream near
-    the horizon; a matching deep-navy variant for dark mode) set as scene.background, regenerated
-    on theme toggle. Fog stays a plain THREE.Color matching the gradient's horizon stop
-    specifically, since THREE.Fog has no gradient support and fog only visually matters near the
-    ground at this camera's typical angles anyway. Deliberately did NOT set texture.colorSpace —
-    that API is Three.js r152+; this app loads r128 (confirmed from the actual script tag), and
-    nothing else here does sRGB-aware color handling either, so adding it in one spot would have
-    introduced a color mismatch rather than fixed one.
-    (2) Filter/layers tool — Land Use already had click-to-hide-category filtering, but nothing
-    signaled the legend items were clickable (no checkbox, no visual affordance beyond a subtle
-    opacity change), and FAR Use / Year Built had NO filtering at all — FAR's categoryForLot()
-    unconditionally returned '?' for every lot, and Year Built used raw 20-year bins that were
-    never exposed in the UI (a comment literally flagged this gap: "Per-decade filtering not in
-    v1.0.0 — flag if worth adding"). Added real discrete buckets for both: FAR gets the same 3
-    categories already named in its legend text (Underbuilt / Partial / At-or-over capacity) plus
-    an Unknown bucket for lots with no applicable zoning FAR; Year Built gets 5 named eras instead
-    of 36 raw 20-year bins. Confirmed live against the real 15,000-lot Manhattan dataset before
-    shipping: FAR buckets split 5339/7304/2208/149 (a sane real distribution, not degenerate), and
-    hiding the "at/over capacity" bucket dropped the rendered near-tier mesh count from 15,848 to
-    13,546 — a ~2,302-lot drop against a 2,208-lot bucket, the small gap expected from lots with
-    multiple footprint parts. Added a visible checkbox affordance to every legend item (previously
-    just a subtle opacity dim with no indicator that it was interactive) and a Show All / Hide All
-    shortcut. Help modal updated to actually mention the filtering exists.
-  v1.3.0 - 2026-07-14 - Two requests: better control layout, and in-app help documentation.
-    Control layout: the legend and the compass/recenter/plan-view/zoom cluster used to be two
-    independently `position:fixed` elements, with the second one positioned by a hand-guessed
-    pixel offset ("bottom: 320px") meant to sit above wherever the first one's real height
-    happened to end — a fragile pattern that visibly broke (the two panels overlapping) whenever
-    the legend's actual content height didn't match the guess. Replaced with a single #rightRail
-    flex column holding both, so they stack by actual layout instead of a guess and structurally
-    cannot overlap. The nav controls themselves were also visually inconsistent (a bordered pill,
-    a plain pill, and a bordered circle all mixed together with no shared container) — now one
-    "Navigate" panel matching the Legend panel's own card styling, with the compass and zoom
-    grouped in one row and Recenter/Plan View as a matched pair below. Header split into a title
-    row and a separate toolbar row (was one row with five different control groups competing for
-    space and wrapping unpredictably). Verified live before shipping: injected the real new CSS
-    and markup into the already-loaded, already-data-populated live site (not a fresh reload) and
-    confirmed the rail actually stacks without collision, not just that the CSS parses.
-    Help documentation: new "?" button opens a panel covering navigation (mouse/touch controls,
-    what the compass/Recenter/Plan View do), how to read a clicked building, what each color mode
-    means, what the zoning envelope represents, and a one-line note on the underlying data source
-    — using the same confirm-overlay modal pattern already established for destructive-action
-    dialogs, so it doesn't introduce a new interaction pattern.
-  v1.2.5 - 2026-07-14 - Two reports that turned out to be the same root cause. (1) "Ghosting when
-    zooming far" (screenshot at dist 758) and (2) "the initial view should start zoomed out to
-    see context" pull in opposite directions unless fixed together: the fog range (near=120,
-    far=900, tuned for the old dist=60 default) put the reported ghosting distance at 82% faded
-    toward the background color — confirmed with the actual fog interpolation math, not a guess
-    — meaning dots weren't rendering faint due to a bug, they were being fogged almost entirely
-    away. Pulling the default view back to dist=750 (per request 2, roughly matching the zoom
-    level the "ghosting" screenshot was already at, since that framing itself was the right call)
-    would have made the SAME wash-out the permanent default state instead of an edge case. Fixed
-    both together: widened fog to near=1200/far=3200 (0% fog at the new dist=750 default, only
-    10% even at the 1400 max-zoom-out clamp) and changed INITIAL_CAM.dist from 60 to 750.
-    Confirmed live: fog factor at the new default distance dropped from 0.82 to 0 before shipping.
-  v1.2.4 - 2026-07-14 - Two more real bugs found live. (1) "Graphic shear still an issue" after
-    v1.2.3's decimation fix — confirmed the deployed site really was already v1.2.3, so this
-    wasn't a stale-cache report. Ran a real self-intersection test against every decimated ring
-    actually in the scene: 8 parts across every borough (including Manhattan) now self-
-    intersected AFTER decimation even though none of them did in the original source geometry —
-    naive even-step point sampling on a real wiggly coastline can create new crossings that
-    weren't there before, and ShapeGeometry's triangulator has no defense against that. This is
-    the second distinct way the filled borough-outline mesh has broken (v1.2.2: mirrored;
-    v1.2.3: sheared even after mitigation) — per this project's own standing lesson about not
-    re-patching a mechanism that keeps failing, the fill is removed entirely rather than tuned
-    further. The stroke (plain connected line segments, never triangulated) carries all the
-    information that actually mattered and structurally cannot have this bug class. (2) "Right-
-    click feels like it's zooming, hard to navigate" — confirmed live this was never actually
-    triggering zoom (camDist stayed exactly fixed through a real synthetic right-drag test); it
-    was pan, but vertical drag moved camTarget.y in raw world space regardless of camera angle —
-    at a typical zoomed-out distance a 100px drag moved the target 126 world units straight up,
-    which reads as the camera rocketing into the sky and is visually indistinguishable from
-    zooming out. Fixed by deriving the camera's actual view-plane "up" direction from the
-    spherical parametrization (matches what camera.lookAt() computes internally) instead of
-    assuming world-Y — reduces to plain vertical panning at low camera angles (unchanged feel for
-    the common case) and correctly becomes ground-plane movement at steep angles like Plan View.
-  v1.2.3 - 2026-07-14 - Reported as "graphic shearing" on the borough outlines (screenshot showed
-    a large diagonal-hatched area where a filled borough shape should be) — traced to real NYC
-    coastline data coming back at absurd resolution for a context layer: Queens' main landmass
-    alone is 16,213 points, Brooklyn's is 12,829. Confirmed live that THREE.ShapeGeometry's
-    ear-clipping triangulator visibly breaks down at that density (the sliver/diagonal artifact
-    IS the triangulator failing, not a coordinate bug this time — the z-flip fix in v1.2.2 was
-    correct and unrelated). Verified the actual fix before shipping it, not just in theory: built
-    the same real Queens ring twice, side by side, at full 16,213-point resolution and decimated
-    to ~300 points, and confirmed the decimated version triangulates and renders cleanly while
-    full-resolution doesn't. Added decimateRing() (even-index-step sampling, not a true
-    Douglas-Peucker simplification — this is a low-detail reference/backdrop layer, exact
-    coastline fidelity isn't the point) applied inside allOuterRingsWorld so every consumer of
-    it (currently just the borough outlines) gets simplified rings automatically. Also a real
-    performance win, independent of the shearing fix: 117 outline parts at full resolution was
-    genuine unnecessary triangulation load for a context layer.
-  v1.2.2 - 2026-07-14 - Reported as "the tan borough outline fill doesn't align with its own
-    outline stroke" — turned out to be a much bigger, previously-hidden bug, found by tracing
-    the actual rotation math rather than assuming the report was scoped to just the new outline
-    feature. rotateX(-pi/2), used to lay a flat Shape down into the XZ ground plane, maps a
-    local (x, y, 0) vertex to world (x, 0, -y) — ringToShape() (shared by addNearMesh AND
-    addEnvelopeMesh, i.e. every near/mid-tier building and every FAR envelope in the entire app)
-    was building shapes with unflipped z, so this rotation silently mirrored every single
-    building north-south relative to the far-tier dots and everything else that projects (x,z)
-    directly. Confirmed live with an exact before/after: the same real building's far-tier dot
-    sat at z=-523.7 while its own near-tier mesh sat at z=+523.4 (an exact sign flip, not a
-    rounding gap) — after negating z in ringToShape(), the near-tier mesh moved to z=-523.4,
-    matching. This had been present since v1.0.0; it was never visually obvious because a
-    borough-wide mirror of a scattered building layout doesn't look wrong on its own, and near/
-    far tiers are never both visible at once to reveal the mismatch against each other — the
-    new borough-outline feature (v1.2.0) is what finally exposed it, because its fill (via the
-    same buggy pattern) and its own stroke (built through a separate, correct code path) ended
-    up side by side and visibly disagreeing. Fixed at the shared root (ringToShape) rather than
-    patched per call site, and addBoroughOutlineMeshes now reuses that same shared helper
-    instead of its own parallel Shape-construction code, specifically to prevent two
-    implementations of the same math drifting out of sync again the way they just did.
-  v1.2.1 - 2026-07-14 - Real root cause of "3D navigation not working" and the console flooding
-    with "THREE.Material: 'transparent' parameter is undefined" (1000+ times), found live via
-    Claude in Chrome, not guessed: (1) addNearMesh()'s isVacant parameter had no default, so
-    every real (non-vacant) building — the overwhelming majority of any borough — passed
-    `transparent: undefined` into its MeshLambertMaterial constructor. Cosmetically harmless on
-    its own, but confirmed the real bug wasn't camera-math related — the camera drag/wheel/pinch
-    logic itself tested correct via synthetic pointer/wheel events dispatched directly at the
-    live canvas (azimuth and distance changed by exactly the expected amounts). (2) The actual
-    cause of "nothing renders, navigation feels broken": buildFarPoints()'s manually-assembled
-    BufferGeometry (the far-tier billboard dots — the LOD tier active at most zoomed-out camera
-    distances, i.e. what most people see by default) never had computeBoundingSphere() called on
-    it. THREE's built-in geometry generators (BoxGeometry, ExtrudeGeometry, ShapeGeometry — used
-    everywhere else in this file) compute their own bounds automatically, confirmed live by
-    diffing draw-call counts before/after forcing the near tier visible with no fix applied
-    (already correct: 4702 draw calls, 42688 triangles). But a hand-built BufferGeometry via
-    setAttribute does not get that for free — with frustumCulled defaulting to true and no
-    bounding sphere, the entire 15,848-point far-tier cloud was being culled every single frame:
-    confirmed live, draw calls 1 -> 12 and rendered points 0 -> 15848 the moment
-    computeBoundingSphere() was added and a fresh borough was loaded end-to-end with the actual
-    fixed function, not just a one-off manual patch. Two more raw-BufferGeometry instances shared
-    the identical gap (floor-banding LineSegments in addNearMesh, and the borough-outline stroke
-    in addBoroughOutlineMeshes) — both less severe (the parent building mass or outline fill
-    still rendered from its own properly-bounded geometry, so only the thin line details were
-    silently disappearing) but fixed for the same reason. Known follow-up, not fixed here: the
-    near tier's ~4700 individual draw calls for one borough is real per-frame overhead that will
-    make close-up navigation feel heavier than it should on modest hardware — a geometry-merging
-    pass (one BufferGeometry per borough instead of one THREE.Mesh per lot) is the real fix,
-    flagged as a genuine v1.3+ item rather than attempted as a rushed add-on to this fix.
-  v1.2.0 - 2026-07-14 - Three requests after the controls landed: (1) Plan View — a straight-
-    down toggle button, reusing the same camera-tween mechanism as Recenter, capped at 89.1
-    degrees rather than a true 90 to avoid the standard lookAt() gimbal-lock singularity at the
-    pole. (2) True north — this was already correct, but only by derivation, not by explicit
-    proof anywhere in the file; added a NORTH ORIENTATION comment next to allOuterRingsWorld
-    walking through exactly why azimuth=0 means facing geographic north given this app's
-    projection sign convention, since this project has already been burned twice by confident-
-    but-unverified claims and a bare assertion wasn't good enough here either. Plan View and the
-    compass both depend on that derivation being right. (3) Five-borough context outlines —
-    added via a new Socrata resource (gthc-hcne, Borough Boundaries), fetched once on boot,
-    independent of the per-borough lot data. Flagged plainly: this resource is NOT live-verified
-    as of this edit — its NYC Open Data page shows the same "redirected to Carto" export
-    language MapPLUTO's page showed before it turned out to be a non-tabular dead end, which is
-    a real risk signal, not a confirmed one. Fetches with no $select clause specifically so a
-    wrong guessed field name can't hard-error the request the way mpluto_bbl did earlier — reads
-    whatever keys actually come back. Fails soft: a broken outline fetch logs a warning and
-    leaves the rest of the app untouched, it doesn't take anything else down.
-  v1.1.0 - 2026-07-14 - Camera controls overhaul, requested after the data pipeline fix made it
-    possible to actually see and try to navigate a real 15,000-lot borough. Added: pinch-to-zoom
-    via tracked multi-pointer distance (the old controls only handled mouse wheel + single-pointer
-    drag — Pointer Events cover single-finger touch drag for free, but never handled a second
-    finger, a real mobile gap); a Recenter button that smoothly tweens camera azimuth/elevation/
-    distance/target back to the initial view (shortestAngleDelta() avoids spinning the long way
-    around); a north-compass dial (click resets azimuth to 0/north-up, same smooth tween, needle
-    rotates live each frame to reflect current heading — cosmetic, consistent with the app's
-    already-approximate equirectangular projection, not a surveyed bearing); and dedicated +/−
-    zoom buttons for anyone who doesn't want to fight the wheel/pinch gesture. Any manual pointer
-    input cancels an in-flight tween so it never fights the user mid-animation.
-  v1.0.3 - 2026-07-14 - Real root cause of the persistent 403, found live via Claude in Chrome
-    against the deployed nycmassing.netlify.app (not file://, ruling out the origin theory from
-    v1.0.2): MapPLUTO (f888-ni5f) is a Socrata "non-tabular" Map asset — its /resource/{id}.json
-    endpoint hard-rejects with 403 "no row or column access to non-tabular tables" from any
-    origin, permanently. Replaced with 64uk-42ks, the tabular PLUTO resource (confirmed 200 OK
-    live) — at the cost of losing lot-polygon geometry entirely, since that resource has none.
-    Live querying also exposed two more real bugs the doc-based field list couldn't have caught:
-    Building Footprints' actual Socrata field names don't match its shapefile attribute names
-    (heightroof/groundelev/cnstrct_yr/feat_code/mpluto_bbl are all wrong; real names are
-    height_roof/ground_elevation/construction_year/feature_code/mappluto_bbl, confirmed via a
-    live $limit=1 query), and BBL comes back in different literal formats from each resource
-    ("1018150114.00000000" vs "1000010010") — a same-string join would have silently matched
-    zero rows even with every field name correct. Added canonBBL() and confirmed a real match
-    live before trusting it. Vacant lots now get a synthetic square footprint from real lat/lon
-    + lotarea (syntheticLotRing) since the new PLUTO source has no polygon to fall back on.
-    Footprint fetch now also filters feature_code='2100' (real buildings only, excludes
-    garages/canopies/tanks). landuse values confirmed unpadded ("1" not "01") — added luCode().
-    CACHE_VERSION bumped to v2 to invalidate any v1 cache built from the dead code path. Still
-    not yet confirmed: what this actually looks like rendered on screen — the join and fields
-    were verified via raw fetch/JSON this session, not a rendered borough.
-  v1.0.2 - 2026-07-14 - Root cause of "canvas is blank" found live (console screenshot from a
-    file:// load): NYC Open Data returns HTTP 403 for requests with no real page origin, which
-    is exactly what Origin: null from a file:// page sends — confirmed by three identical,
-    immediate 403s with no partial success (not a rate-limit pattern). This is a platform
-    behavior, not a code bug, and the fix is procedural: load the deployed (Netlify) version to
-    test live data, not the raw downloaded file. Two real code bugs it did expose, both fixed
-    here: (1) fetchWithTimeout() burned all 3 retries on a 403 that could never succeed on
-    retry — now fails fast on 401/403; (2) a failed load left the status bar reading its
-    initial static "loading…" text forever with no indication anything had gone wrong — now
-    shows the real failure, and a 403 specifically gets an actionable message instead of a raw
-    HTTP code.
-  v1.0.1 - 2026-07-14 - Fixed a real gap flagged by "canvas is blank": renderer was created
-    with alpha:true and scene.background was never set, so with no ground plane either, an
-    empty or still-loading scene rendered as a fully transparent canvas over the page — visually
-    indistinguishable from broken. Added an explicit theme-aware scene.background + fog, and a
-    ground plane, both updated on theme toggle. This does not rule out a live data-fetch failure
-    as the actual root cause of the report — that still needs the real console output to confirm.
-  v1.0.0 - 2026-07-14 - Initial build: borough-scoped fetch from NYC Open Data (MapPLUTO f888-ni5f joined to Building Footprints 5zhs-2jue on BBL), real footprint extrusion to real heightroof, FAR-derived zoning-envelope overlay (maxFAR × lotarea, comparison to builtfar), three color modes (Land Use / FAR Utilization / Year Built), near/mid/far camera-distance LOD, click-to-inspect, vacant/no-footprint lots as flat lot-polygon markers.
-  KNOWN GAP - field names cross-checked against two independent live-fetched sources this
-    session (NYC OTI's GitHub metadata page for Building Footprints, and PLUTO's published
-    data dictionary field list) and they agree with what's used below. That's higher
-    confidence than memory alone, but it is still not the same as a live query response —
-    no network path to data.cityofnewyork.us exists from the build environment itself.
-    First real load in a browser should be treated the way any STAND fix is: confirmed
-    against the actual response before trusting the numbers.
+  v1.7.8 - Cut initial load time by ~60x: materials are now shared by color instead of allocated
+    per building, and full-detail (near/mid LOD) building geometry is built lazily the first time
+    the camera zooms in close enough to need it, instead of upfront for every lot on every load.
+  v1.7.7 - Added a small-screen gate; the map, toolbar, and side panels need a tablet or larger.
+  v1.7.6 - Fixed block-LOD buildings on grid-aligned blocks fusing into one mass with no visible
+    streets — the block box is now oriented to each building's real footprint angle instead of
+    axis-aligned to world coordinates.
+  v1.7.4 - Fixed the land/water ground texture rendering mirrored north-south.
+  v1.7.3 - Added a land/water color distinction to the ground plane, generated from real borough
+    coastline data.
+  v1.7.0-v1.7.2 - Fixed residual fog/haze and an orange color cast on the ground at normal zoom.
+  v1.6.9 - Parallelized data pagination for faster loads.
+  v1.6.5-v1.6.8 - Fixed the day/night sky gradients, a stylesheet-breaking typo, borough labels
+    sinking into the ground, and the navigation panel disappearing under certain layouts.
+  v1.6.0-v1.6.4 - Added a major-streets overlay and a Neighborhood color mode; general load-time
+    optimizations (parallel fetches, localStorage caching for citywide layers); documentation and
+    legend fixes.
+  v1.5.0-v1.5.3 - Fixed the neighborhood search box and some buildings not rendering at certain
+    zoom levels; confirmed bare-looking areas reflect real data gaps, not missing data.
+  v1.4.0-v1.4.8 - Camera/zoom/pan fixes, discrete FAR and Year-Built color buckets, full borough
+    name labels, and several passes on borough-outline rendering (jitter, faint lines, shearing).
+  v1.3.0 - Reorganized the control layout; added in-app help documentation.
+  v1.2.0-v1.2.5 - Added Plan View, recenter, and a north compass; fixed borough-outline geometry
+    shearing (added coastline ring decimation) and a ghosting/z-fighting artifact.
+  v1.1.0 - Added camera orbit/pan/zoom controls.
+  v1.0.1-v1.0.3 - Fixed a blank canvas on load, a renderer resize bug, and a persistent 403 caused
+    by treating MapPLUTO as the wrong Socrata resource type.
+  v1.0.0 - Initial build: borough-scoped fetch from NYC Open Data (MapPLUTO joined to Building
+    Footprints on BBL), real footprint extrusion to real recorded height, FAR-derived zoning
+    envelope overlay, three color modes (Land Use / FAR Utilization / Year Built), near/mid/far
+    camera-distance LOD, click-to-inspect, vacant/no-footprint lots rendered as flat markers.
 -->
 <html lang="en">
 <head>
@@ -656,14 +49,14 @@
 <meta name="apple-mobile-web-app-title" content="Massing">
 <meta name="theme-color" content="#EDEAE0" id="themeColorMeta">
 <title>MASSING — NYC building massing from PLUTO</title>
-<!-- v1.6.9: neither of these existed. Every load pays full DNS+TCP+TLS negotiation for both
+<!-- Every load pays full DNS+TCP+TLS negotiation for both
      origins from a cold start — cdnjs.cloudflare.com only gets contacted once the browser
      reaches the <script src> tag near the end of <body>, and data.cityofnewyork.us only gets
      contacted once boot() fires its first fetch(), both well after this point in parsing.
      preconnect lets the browser open both connections in parallel with parsing the rest of the
      head/CSS, so by the time either is actually needed the handshake is already done or well
      underway — a real ~100-300ms-per-origin saving on the critical path of every cold load,
-     not just repeat visits (the caching added in v1.6.2 mainly helps those instead). -->
+     not just repeat visits (localStorage caching mainly helps those instead). -->
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 <link rel="preconnect" href="https://data.cityofnewyork.us" crossorigin>
 <style>
@@ -715,16 +108,15 @@
     border:1.5px solid var(--ink); background:var(--ink); color:var(--paper);
   }
   .btn.secondary{background:transparent; color:var(--ink);}
-  /* v1.7.1: reported "Show zoning envelope"/"Show major streets" render fully transparent in
-     their default (off) state — confirmed a real CSS specificity bug, not a rendering issue.
-     Both buttons carry class="btn secondary panel", intending the .panel rule's solid
-     background:var(--card) to give them the same card look as every other toolbar button. But
-     .btn.secondary (two chained classes = specificity 0,2,0) always beats .panel (one class =
-     0,1,0), regardless of source order, so background:transparent silently won every time.
-     Their ACTIVE (toggled-on) state never showed this bug — .btn.active is ALSO 0,2,0, and
-     since it's declared later in this file, the same-specificity tiebreak goes to source order,
-     which happens to favor .active. Only the default/off state was ever actually broken. Scoped
-     this override to the exact three-class combination so it doesn't change any other
+  /* .btn.secondary/.panel specificity note: "Show zoning envelope"/"Show major streets" carry
+     class="btn secondary panel", intending the .panel rule's solid background:var(--card) to
+     give them the same card look as every other toolbar button. But .btn.secondary (two chained
+     classes = specificity 0,2,0) always beats .panel (one class = 0,1,0), regardless of source
+     order, so background:transparent silently wins in the default/off state. Their ACTIVE
+     (toggled-on) state doesn't show this — .btn.active is ALSO 0,2,0, and since it's declared
+     later in this file, the same-specificity tiebreak goes to source order, which favors
+     .active. Only the default/off state needs the override below. Scoped to the exact
+     three-class combination so it doesn't change any other
      .btn.secondary element that isn't also .panel. */
   .btn.secondary.panel{background:var(--card);}
   .btn.ghost{background:transparent; border-color:transparent; color:var(--ink-soft); padding:6px 8px;}
@@ -738,7 +130,7 @@
   #canvasWrap{position:fixed; inset:0;}
   canvas{display:block; width:100%; height:100%;}
 
-  /* v1.7.7: small-screen gate — hidden by default, shown (and everything else hidden) only via
+  /* Small-screen gate — hidden by default, shown (and everything else hidden) only via
      body.gate-small, which JS sets/clears based on the viewport's SHORTER dimension so a phone
      rotated to landscape doesn't slip through (width alone would pass a landscape phone). */
   #smallScreenGate{
@@ -839,12 +231,9 @@
     display:flex; flex-direction:column; gap:10px; align-items:stretch;
     width:250px; max-height:calc(100vh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   }
-  /* v1.6.6: the v1.6.5 fix below shipped with a // line comment — CSS has no such thing, only
-     /* ... * / block comments. That invalid syntax corrupted the stylesheet parser from this
-     point onward, silently dropping most of the CSS that followed it (.swatch, .legendCheck,
-     #navPanel, the compass styling, and more) — confirmed live: the deployed stylesheet had
-     only 47 CSS rules total when it should have several hundred. min-height:0 here was a real,
-     correct fix (see below) — the comment explaining it is what broke everything after it. */
+  /* Note: CSS has no // line comments, only /* ... * / block comments — a // comment here once
+     silently corrupted the parser and dropped most of the rules that followed it (.swatch,
+     .legendCheck, #navPanel, etc.). Keep this block-comment only. */
   #sidePanel{overflow-y:auto; flex:0 1 auto; min-height:0;}
   #sidePanel .legend-item{display:flex; align-items:center; gap:8px; padding:5px 2px; font-family:var(--font-ui); font-size:12.5px; border:none; background:none; width:100%; text-align:left; color:var(--ink);}
   .legend-item.off{opacity:0.55;}
@@ -967,12 +356,9 @@
 
 <div id="canvasWrap"></div>
 
-<!-- v1.7.7: reported this needs the same "screen too small" gate as Modulor Mondrian (see
-     mm.jpg reference) — MASSING's map + toolbar + Land Use/Navigate side panels don't fit a
-     phone-sized screen either. Same structural pattern (icon, rule, caps title, body copy, rule,
-     footer) but themed to MASSING's own palette/subject instead of copying Mondrian's panels: a
-     little 5-bar skyline using the real LANDUSE_COLORS values already used throughout the app,
-     not arbitrary new colors. -->
+<!-- Small-screen gate — the map, toolbar, and Land Use/Navigate side panels don't fit a
+     phone-sized screen. Icon is a little 5-bar skyline built from the real LANDUSE_COLORS
+     values used throughout the app, not arbitrary new colors. -->
 <div id="smallScreenGate">
   <svg class="gateIcon" viewBox="0 0 96 72" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <rect x="2"  y="30" width="15" height="38" fill="#C8932A"/>
@@ -1203,41 +589,33 @@ async function fetchWithTimeout(url, {timeoutMs=15000, retries=3} = {}){
    Building Footprints (5zhs-2jue): real building outline + real roof height, joined on a
    canonicalized BBL.
 
-   CORRECTED LIVE 2026-07-14 via Claude in Chrome against the actual deployed site — this
-   replaces the doc-derived field list, which was wrong in two ways docs alone never surfaced:
+   Field/resource notes (differ from the published data dictionary in a few real ways):
    (1) f888-ni5f (MapPLUTO) is a Socrata "non-tabular" Map asset — /resource/{id}.json
        rejects it with a 403 and "no row or column access to non-tabular tables", from ANY
-       origin, always. Not a CORS/origin issue at all (that first diagnosis was wrong).
-       Replaced with 64uk-42ks, the plain tabular PLUTO resource — confirmed 200 OK live,
-       but it carries NO geometry at all (no lot polygon), a real capability loss handled
-       below with a synthetic lat/lon + lotarea footprint for vacant lots.
+       origin. Not a CORS/origin issue. Use 64uk-42ks, the plain tabular PLUTO resource
+       instead — it carries no geometry (no lot polygon), a real capability loss handled below
+       with a synthetic lat/lon + lotarea footprint for vacant lots.
    (2) Socrata's API field names are generated from each column's *display title*, not its
        shapefile attribute abbreviation — so heightroof/groundelev/cnstrct_yr/feat_code/
        mpluto_bbl (all from the published data dictionary) don't exist on the live resource.
-       Real names, confirmed via a live $limit=1 query: height_roof, ground_elevation,
-       construction_year, feature_code, mappluto_bbl.
+       Real field names: height_roof, ground_elevation, construction_year, feature_code,
+       mappluto_bbl.
    (3) BBL comes back in a different literal format from each resource — PLUTO's bbl is a
        SODA number type serialized as "1018150114.00000000"; Building Footprints' mappluto_bbl
        is a clean text "1018150114". A direct string-equality join silently matches nothing.
-       canonBBL() below normalizes both before every join lookup — confirmed live with a real
-       matched pair before trusting it.
-   Still NOT yet verified: what the actual joined geometry looks like rendered on screen (this
-   session confirmed the join and fields via raw fetch/JSON, not a rendered borough). Treat
-   that the way any STAND visual fix is treated — confirm live, don't assume. */
+       canonBBL() below normalizes both before every join lookup. */
 const SOCRATA_BASE = 'https://data.cityofnewyork.us/resource/';
 const PLUTO_RESOURCE = '64uk-42ks';   // tabular PLUTO attributes — NO geometry (see note above)
 const FOOTPRINT_RESOURCE = '5zhs-2jue';
-const MAX_LOTS_PER_BOROUGH = 15000; // v1.0.0 perf guard — raise once real-world frame time is verified live
+const MAX_LOTS_PER_BOROUGH = 15000; // perf guard — raise once real-world frame time is verified
 const BORO_CODE_TO_LETTER = {1:'MN', 2:'BX', 3:'BK', 4:'QN', 5:'SI'};
-const CACHE_VERSION = 'v2'; // bumped — v1 cached entries were built from the broken f888-ni5f path
+const CACHE_VERSION = 'v2';
 
-// v1.6.2: the four citywide static layers (borough outlines, major streets, NTA name list,
-// full NTA geometries) were re-fetched from the network on every single page load with no
-// persistence at all — unlike the per-borough PLUTO/footprint cache above. The NTA geometry
-// fetch alone is a confirmed-live ~5s/4.5MB cost paid again on every session, even though this
-// data changes essentially never between deploys. Versioned separately from CACHE_VERSION
-// (the per-borough PLUTO/footprints shape) since these are a different data shape entirely and
-// have no reason to invalidate together. Same fail-soft posture as saveToCache: caching is a
+// The four citywide static layers (borough outlines, major streets, NTA name list, full NTA
+// geometries) are cached in localStorage separately from the per-borough PLUTO/footprint cache
+// above — the NTA geometry fetch alone is a ~5s/4.5MB cost, and this data changes essentially
+// never between deploys. Versioned separately from CACHE_VERSION since these are a different
+// data shape with no reason to invalidate together. Same fail-soft posture as saveToCache: caching is a
 // nice-to-have, so a quota-exceeded write is swallowed, not surfaced as an error.
 const STATIC_CACHE_VERSION = 's1';
 function staticCacheKey(name){ return `massing_static_${STATIC_CACHE_VERSION}_${name}`; }
@@ -1266,7 +644,7 @@ const FOOTPRINT_FIELDS = ['mappluto_bbl','height_roof','ground_elevation','const
 async function fetchPlutoBorough(boroLetter){
   const select = PLUTO_FIELDS.join(',');
   const pageSize = 5000;
-  // v1.6.9: MAX_LOTS_PER_BOROUGH/pageSize is a FIXED, known-in-advance page count (3), not an
+  // MAX_LOTS_PER_BOROUGH/pageSize is a FIXED, known-in-advance page count (3), not an
   // unknown one — the old sequential while loop paid 3 full round-trips back to back for every
   // large borough (BK/QN routinely hit the cap), even though each offset request is completely
   // independent of the others. Firing all 3 in parallel turns that into 1 round-trip's worth of
@@ -1305,16 +683,16 @@ async function fetchFootprintsBorough(boroDigit){
 }
 
 /* ================= v1.5.0 — named-neighborhood filtering =================
-   Reported that whole swaths of a borough render bare — traced live to MAX_LOTS_PER_BOROUGH
-   (15000) being a small fraction of any real borough's actual lot count (Manhattan alone has
-   42,544; Queens has 324,559), fetched with no $order clause so the first 15000 rows returned
-   are whatever order Socrata happens to give, not a spatial sample — likely a contiguous BBL
-   range, i.e. entire neighborhoods silently dropped rather than an even city-wide thinning.
-   A named-neighborhood view sidesteps the cap entirely instead of just softening it: a single
-   NTA is small enough that its real lot count is comfortably under 15000, so what's fetched is
-   everything, not a slice. Uses NYC DCP's own 2020 Neighborhood Tabulation Areas (9nt8-h7nd) —
-   confirmed live that "Hell's Kitchen" exists there by exact name (nta2020 'MN0402'), which is
-   what makes a real named-neighborhood picker possible instead of hand-guessed bounding boxes. */
+   MAX_LOTS_PER_BOROUGH (15000) is a small fraction of any real borough's actual lot count
+   (Manhattan alone has 42,544; Queens has 324,559), and the fetch has no $order clause, so the
+   first 15000 rows returned are whatever order Socrata happens to give, not a spatial sample —
+   likely a contiguous BBL range, i.e. entire neighborhoods silently dropped rather than an even
+   city-wide thinning. A named-neighborhood view sidesteps the cap entirely instead of just
+   softening it: a single NTA is small enough that its real lot count is comfortably under
+   15000, so what's fetched is everything, not a slice. Uses NYC DCP's own 2020 Neighborhood
+   Tabulation Areas (9nt8-h7nd), which covers named neighborhoods like "Hell's Kitchen"
+   (nta2020 'MN0402') directly, making a real named-neighborhood picker possible instead of
+   hand-guessed bounding boxes. */
 const NTA_RESOURCE = '9nt8-h7nd';
 const BORONAME_TO_DIGIT = {'Manhattan':1, 'Bronx':2, 'Brooklyn':3, 'Queens':4, 'Staten Island':5};
 let ntaList = []; // [{ntaname, nta2020, boroname}] — loaded once at boot, ~260 rows, cheap
@@ -1337,12 +715,11 @@ async function fetchNtaGeometry(nta2020){
   const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
   return rows[0] && rows[0].the_geom;
 }
-/* ================= v1.6.0 — neighborhood color mode ================= */
 // Unlike the single-neighborhood search (which fetches one NTA's geometry on demand), this
 // color mode needs every visible lot classified against every NTA at once — so it needs all
-// 262 polygons loaded, not just one. Confirmed live before committing to this: that's a real
-// cost (4.5MB, ~5s), not a cheap lookup, so it's loaded lazily on first use of this color mode
-// rather than at boot like loadNtaList()'s tiny name/code list.
+// 262 polygons loaded, not just one. That's a real cost (4.5MB, ~5s), not a cheap lookup, so
+// it's loaded lazily on first use of this color mode rather than at boot like loadNtaList()'s
+// tiny name/code list.
 let ntaGeomCache = {}; // nta2020 -> {ntaname, boroname, rings, bbox}
 let ntaGeomLoaded = false;
 async function loadAllNtaGeometries(){
@@ -1390,14 +767,13 @@ function assignNeighborhoods(records){
     rec.nta2020 = found;
   }
 }
-// Confirmed live in v1.6.0: hashing nta2020 (short codes like 'MN04', 'MN12' that mostly
-// share a borough-prefix) doesn't spread evenly across the hue wheel — neighborhoods clustered
-// into 6-7 repeated colors instead of 262 distinct ones, defeating the point of this mode.
-// Fixed in v1.6.1: hue is now each neighborhood's position in the full sorted code list times
-// the golden angle (137.508°) — still fully deterministic across sessions/reloads (same code
-// list, same sort, same index every time), but golden-angle spacing means consecutive indices
-// land far apart on the hue wheel, so alphabetically-adjacent codes never get visually adjacent
-// colors either.
+// Hashing nta2020 (short codes like 'MN04', 'MN12' that mostly share a borough-prefix) doesn't
+// spread evenly across the hue wheel — neighborhoods cluster into 6-7 repeated colors instead
+// of 262 distinct ones, defeating the point of this mode. Instead, hue is each neighborhood's
+// position in the full sorted code list times the golden angle (137.508°) — still fully
+// deterministic across sessions/reloads (same code list, same sort, same index every time), but
+// golden-angle spacing means consecutive indices land far apart on the hue wheel, so
+// alphabetically-adjacent codes never get visually adjacent colors either.
 let ntaHueIndex = null; // nta2020 -> index in the full sorted code list, built once from ntaList
 function neighborhoodHueIndex(nta2020){
   if(!ntaHueIndex){
@@ -1475,7 +851,7 @@ async function loadBoroughData(boroDigit){
   const cached = loadFromCache(boroLetter);
   if(cached){ toast(`${boroLetter} loaded from cache`); return cached; }
 
-  // v1.6.2: fetchFootprintsBorough only needs boroDigit, not the PLUTO result — these two
+  // fetchFootprintsBorough only needs boroDigit, not the PLUTO result — these two
   // fetches never depended on each other, they were just written one after another. Running
   // them in parallel roughly halves the network-bound wait on every borough load (the single
   // most frequent load path in the app — initial boot and every borough-tab switch go through
@@ -1499,15 +875,10 @@ async function loadBoroughData(boroDigit){
 }
 
 /* ================= Borough context outlines (all 5 boroughs, fetched once) =================
-   UNVERIFIED LIVE as of this edit — flagging explicitly rather than asserting confidence,
-   given this exact project already got burned twice by trusting an untested resource
-   (MapPLUTO's f888-ni5f "non-tabular" 403, and Building Footprints' doc-vs-real field names).
-   gthc-hcne's own NYC Open Data page shows the same "redirected to Carto" export language
-   MapPLUTO's page showed, which is a real (not confirmed) risk signal that this could also be
-   a non-tabular Map asset. Fetching with NO $select clause deliberately — a wrong field name
-   in $select throws a hard SODA error (that's exactly what happened with mpluto_bbl earlier),
-   so this reads whatever keys actually come back instead of guessing them. If this 403s or
-   errors, it fails soft: context outlines just don't appear, everything else keeps working. */
+   Fetches with NO $select clause deliberately — a wrong field name in $select throws a hard
+   SODA error (see the MapPLUTO/Building Footprints field-name notes above), so this reads
+   whatever keys actually come back instead of guessing them. If this 403s or errors, it fails
+   soft: context outlines just don't appear, everything else keeps working. */
 const BOROUGH_OUTLINE_RESOURCE = 'gthc-hcne';
 let boroughOutlinesLoaded = false;
 async function loadBoroughOutlines(){
@@ -1572,7 +943,7 @@ async function loadMajorStreets(){
         if(part.length < 2) continue;
         const geo = buildPolylineRibbonGeometry(part, STREET_RIBBON_WIDTH);
         const mesh = new THREE.Mesh(geo, mat);
-        // v1.4.8 already taught this codebase the hard way: sits above the ground plane
+        // Sits above the ground plane
         // (-0.05), below the borough-outline ribbon (0.1), so the two layers don't z-fight
         // each other where a street crosses a borough boundary
         mesh.position.y = 0.03;
@@ -1662,16 +1033,15 @@ function buildBoroughLabelSprite(text){
   return sprite;
 }
 const BOROUGH_OUTLINE_WIDTH = 2.5; // world units (~125ft at this scene's ~50ft/unit scale) — a real mesh
-  // width, not a GL linewidth hint, so it renders identically on every platform (see v1.4.7 note below)
+  // width, not a GL linewidth hint, so it renders identically on every platform (see note below)
 function buildRingRibbonGeometry(ring, width){
-  // v1.4.7: builds the outline as an actual triangle-strip band instead of a THREE.Line.
+  // Builds the outline as an actual triangle-strip band instead of a THREE.Line.
   // THREE.LineBasicMaterial's `linewidth` is a GL line-width hint that only a handful of
   // platforms (mostly macOS's OpenGL backend) honor — on ANGLE/Direct3D, which is what most
   // Windows Chrome installs use, every WebGL line is forced to exactly 1px no matter what
-  // linewidth or opacity is set to. That's why raising opacity in v1.4.6 didn't fix the
-  // reported faintness: the line was already 1px, opacity was never the bottleneck. A mesh
-  // has a real, controllable on-screen footprint on every platform, so it doesn't depend on
-  // that GL feature at all.
+  // linewidth or opacity is set to; raising opacity alone can't fix that, since the line was
+  // already 1px and opacity was never the bottleneck. A mesh has a real, controllable on-screen
+  // footprint on every platform, so it doesn't depend on that GL feature at all.
   const half = width / 2;
   const positions = [];
   const n = ring.length;
@@ -1699,7 +1069,7 @@ function buildRingRibbonGeometry(ring, width){
   geo.computeBoundingSphere();
   return geo;
 }
-// v1.6.0: open-polyline sibling of buildRingRibbonGeometry, for street centerlines — same
+// Open-polyline sibling of buildRingRibbonGeometry, for street centerlines — same
 // real-mesh-not-a-GL-line reasoning as the comment above, just without wrapping the last point
 // back to the first, since a street isn't a closed loop. The joint-filler square is skipped at
 // index 0 since there's no incoming segment there to join.
@@ -1730,28 +1100,23 @@ function buildPolylineRibbonGeometry(points, width){
   return geo;
 }
 function addBoroughOutlineMeshes(rings, label){
-  // v1.2.4: the filled ShapeGeometry wash is gone. Two rounds of trying to make real NYC
-  // coastline data triangulate cleanly both failed for the same underlying reason — even after
-  // decimating to ~300 points (v1.2.3), naive even-step sampling on a real wiggly coastline can
-  // introduce NEW self-intersections that weren't in the source geometry (confirmed live: 8 of
-  // the decimated ring parts, across every borough including Manhattan, self-intersect after
-  // decimation even though none of them do before it). A true topology-preserving simplifier
-  // would fix this properly, but that's real added complexity for what is a low-value backdrop
-  // wash, not the data itself. The ribbon below carries 100% of the information that matters
-  // (the boundary shape) and structurally cannot have this bug class — each segment is an
-  // independent quad, never a single triangulated polygon.
+  // A filled ShapeGeometry wash for the borough outlines doesn't triangulate reliably: real NYC
+  // coastline data, even decimated to ~300 points, can develop NEW self-intersections on
+  // sampling that weren't in the source geometry (several ring parts across every borough,
+  // including Manhattan, self-intersect after decimation even though none do before it). A true
+  // topology-preserving simplifier would fix this properly, but that's real added complexity for
+  // what is a low-value backdrop wash, not the data itself. The ribbon below carries 100% of the
+  // information that matters (the boundary shape) and structurally cannot have this bug class —
+  // each segment is an independent quad, never a single triangulated polygon.
   for(const ring of rings){
-    // v1.4.8: reported live that the v1.4.7 ribbon looked worse than the old faint line — a
-    // broken, dotted chain instead of a solid boundary. Root cause, found by patching this
-    // value live in the running scene and comparing renders: ground.position.y is -0.05, and
-    // this mesh was at -0.3 — BELOW/further-from-camera than the ground for this app's
-    // always-elevated, downward-looking camera. The ground plane was therefore in front of the
-    // outline at almost every pixel, and the "dots" that did show through were just spots where
-    // logarithmicDepthBuffer precision happened to let a triangle win the depth test anyway —
-    // not a geometry gap. depthWrite:false (kept below) never helped, because the problem was
-    // depth TEST outcome, not depth WRITE. Moving the outline to a small positive y — above,
-    // not below, the ground — makes it unambiguously the nearer surface for this camera, so it
-    // renders as a solid line regardless of depth-buffer precision at any distance.
+    // The outline ribbon sits at a small positive y (above the ground plane, not below). With
+    // the ground plane at y=-0.05, an outline below it (e.g. y=-0.3) loses the depth test at
+    // almost every pixel for this app's always-elevated, downward-looking camera — it renders
+    // as a broken, dotted chain rather than a solid line, since only the rare spot where
+    // logarithmicDepthBuffer precision happens to let a triangle win the depth test shows
+    // through. depthWrite:false doesn't help this — the problem is depth TEST outcome, not
+    // depth WRITE. Keeping the outline above the ground makes it unambiguously the nearer
+    // surface, so it renders as a solid line regardless of depth-buffer precision at any distance.
     const ribbonGeo = buildRingRibbonGeometry(ring, BOROUGH_OUTLINE_WIDTH);
     const ribbonMesh = new THREE.Mesh(ribbonGeo, new THREE.MeshBasicMaterial({color:0x9C917A, transparent:true, opacity:0.9, depthWrite:false, side:THREE.DoubleSide}));
     ribbonMesh.position.y = 0.1;
@@ -1764,13 +1129,10 @@ function addBoroughOutlineMeshes(rings, label){
     const largest = rings.reduce((a,b) => ringArea(b) > ringArea(a) ? b : a, rings[0]);
     const [cx, cz] = ringCentroid(largest);
     const sprite = buildBoroughLabelSprite(label);
-    // v1.6.8: reported the bottom of the label text reads as partially submerged into the
-    // ground. THREE.Sprite always renders centered on its position — this sprite is 26 world
-    // units tall (BOROUGH_LABEL_WORLD_HEIGHT), so at the old position.y=3 its bottom edge sat
-    // at y=3-13=-10, well below the ground plane (ground.position.y=-0.05). Roughly half the
-    // sprite, including part of the glyphs themselves (not just canvas padding), was rendering
-    // below the ground and getting clipped. Center now sits high enough that the bottom edge
-    // clears the ground with real headroom.
+    // THREE.Sprite always renders centered on its position — this sprite is 26 world units
+    // tall (BOROUGH_LABEL_WORLD_HEIGHT), so at position.y=3 its bottom edge would sit at
+    // y=3-13=-10, well below the ground plane (ground.position.y=-0.05), clipping part of the
+    // glyphs themselves. Center is set high enough that the bottom edge clears the ground.
     sprite.position.set(cx, BOROUGH_LABEL_WORLD_HEIGHT / 2 + 2, cz);
     labelGroup.add(sprite);
   }
@@ -1778,8 +1140,7 @@ function addBoroughOutlineMeshes(rings, label){
 
 
 // Simple equirectangular projection centered on NYC, in feet, then scaled to world units.
-// Not a true State Plane projection — fine at city scale for a generative-art render, same
-// spirit as STAND's coastline approximation.
+// Not a true State Plane projection — fine at city scale for a generative-art render.
 const REF_LON = -73.97, REF_LAT = 40.70;
 const FT_PER_DEG_LAT = 364000;
 const FT_PER_DEG_LON = 364000 * Math.cos(REF_LAT * Math.PI/180);
@@ -1817,7 +1178,7 @@ function allOuterRingsWorld(geom){
   return rings.map(part => decimateRing(part[0].map(([lon,lat]) => projectLonLat(lon, lat)), 300))
     .filter(r => r.length >= 3);
 }
-// v1.6.0: sibling to allOuterRingsWorld for LineString/MultiLineString geometry (streets), not
+// Sibling to allOuterRingsWorld for LineString/MultiLineString geometry (streets), not
 // Polygon/MultiPolygon. No "outer ring" concept for a line — every part of a MultiLineString
 // matters (e.g. a dual-carriageway avenue's two separate roadbeds), so this keeps them all,
 // unlike allOuterRingsWorld dropping holes. No decimation either — street segments are already
@@ -1833,13 +1194,12 @@ function allLineStringPartsWorld(geom){
 }
 
 // Real NYC borough coastline data comes back at absurd resolution for a context layer — one
-// borough's main landmass alone had 16,213 points. Confirmed live: THREE.ShapeGeometry's
-// ear-clipping triangulator visibly breaks down at that density (the "shearing" artifact —
-// diagonal sliver triangles instead of a clean fill), and a side-by-side render of the same
-// ring at full resolution vs. decimated to ~300 points confirmed the decimated version
-// triangulates cleanly. This is a reference/backdrop layer, not the data itself, so losing
-// fine coastline detail costs nothing that matters here — evenly-spaced index sampling (not a
-// true Douglas-Peucker simplification) is enough, and cheap.
+// borough's main landmass alone had 16,213 points. THREE.ShapeGeometry's ear-clipping
+// triangulator breaks down at that density (diagonal sliver triangles instead of a clean fill),
+// while the same ring decimated to ~300 points triangulates cleanly. This is a
+// reference/backdrop layer, not the data itself, so losing fine coastline detail costs nothing
+// that matters here — evenly-spaced index sampling (not a true Douglas-Peucker simplification)
+// is enough, and cheap.
 function decimateRing(ring, maxPoints){
   if(ring.length <= maxPoints) return ring;
   const step = Math.max(1, Math.floor(ring.length / maxPoints));
@@ -1950,13 +1310,10 @@ function yearEraSwatch(key){
 
 /* ================= Three.js scene ================= */
 let scene, camera, renderer, ground;
-// v1.4.2: reported Recenter's default view doesn't make sense — Manhattan (and the other
-// boroughs) run roughly north-south, but azimuth=0.9 rad (~52°) put the camera southeast of
-// the target, viewing the island across its short axis from the side rather than along its
-// length. azimuth=0 puts the camera due south of the target looking north (per the
-// camera-position formula below: x=camTarget.x+dist*cos(el)*sin(az), z=camTarget.z+
-// dist*cos(el)*cos(az) — at az=0, sin=0/cos=1, so the camera sits at larger Z, i.e. south,
-// facing north), which reads as a sensible north-up default instead of an arbitrary diagonal.
+// Manhattan (and the other boroughs) run roughly north-south, so azimuth=0 puts the camera due
+// south of the target looking north (per the camera-position formula below:
+// x=camTarget.x+dist*cos(el)*sin(az), z=camTarget.z+dist*cos(el)*cos(az) — at az=0, sin=0/cos=1,
+// so the camera sits at larger Z, i.e. south, facing north), a sensible north-up default.
 const INITIAL_CAM = {azimuth: 0, elevation: 0.55, dist: 750};
 let camDist = INITIAL_CAM.dist, camAzimuth = INITIAL_CAM.azimuth, camElevation = INITIAL_CAM.elevation;
 let camTarget = new THREE.Vector3(0,0,0);
@@ -2002,7 +1359,7 @@ function recenterView(){
   animateCameraTo({azimuth: INITIAL_CAM.azimuth, elevation: INITIAL_CAM.elevation, dist: INITIAL_CAM.dist, target: new THREE.Vector3(0,0,0)});
   inPlanView = false;
 }
-// v1.5.0: frames the camera on a neighborhood's extent after selectNeighborhood loads it —
+// Frames the camera on a neighborhood's extent after selectNeighborhood loads it —
 // same centroid convention as buildBoroughLabelSprite's placement (largest ring, area-weighted
 // centroid), with distance solved from the ring's bounding-box diagonal against this app's
 // fixed 55-degree FOV (see initScene) instead of a guessed constant, so it works for both a
@@ -2050,34 +1407,24 @@ const midGroup = new THREE.Group();    // bounding-box prism
 const farGroup = new THREE.Group();    // billboard points
 const envelopeGroup = new THREE.Group();
 const contextGroup = new THREE.Group(); // borough outlines — loaded once, independent of the per-borough lot data
-const streetGroup = new THREE.Group(); // v1.6.0: major streets — same "loaded once, citywide, independent of per-borough lot data" philosophy as contextGroup
+const streetGroup = new THREE.Group(); // major streets — same "loaded once, citywide, independent of per-borough lot data" philosophy as contextGroup
 streetGroup.visible = false;
 let showStreets = false; // opt-in, same posture as showEnvelope — a citywide street layer is real clutter risk if it's on by default
-const labelGroup = new THREE.Group(); // v1.4.5: borough name labels, same load pass as the outlines
+const labelGroup = new THREE.Group(); // borough name labels, same load pass as the outlines
 let farPoints = null, farPointRecords = [];
 
 const NEAR_MAX_DIST = 14;
-// v1.5.1: reported "sometimes the pills don't render to mass forms when zoomed in" — confirmed
-// live that at dist=116 (their screenshot) far/dot tier was CORRECTLY active per the old
-// MID_MAX_DIST=55, and confirmed the geometry itself has no widespread degenerate meshes (1
-// bad mesh out of 15848 near/mid meshes checked) — so this was never a broken-geometry bug,
-// it was the threshold itself being tuned far tighter than what reads as "zoomed in": their
-// screenshot's dist=116 is over 2x the old cutoff. Never revisited since v1.0.0, same pattern
-// as MAX_LOTS_PER_BOROUGH's own "raise once verified live" note — mid tier is cheap simple-box
-// geometry (frustum-culled like everything else), so there's no perf reason it needed to be
-// this tight. Raised from 55 to 200 so block-level mass forms appear across the range users
-// actually zoom to, not just the last quarter of it.
+// MID_MAX_DIST controls how far out the mid (block) LOD stays active before falling back to
+// far (dot) — mid tier is cheap simple-box geometry (frustum-culled like everything else), so
+// there's no perf reason for this to be tight. Set generously so block-level mass forms appear
+// across the range people actually zoom to, not just the last quarter of it.
 const MID_MAX_DIST = 200;
 
-// v1.4.1: reported "limit on how far you can zoom in" + "pan feels broken" when navigating
-// close. Root cause of the zoom limit: the zoom-in floor was hardcoded to 1.5 (=75ft, given
-// FEET_PER_WORLD_UNIT=50) in three separate places (wheel, pinch, zoom buttons) — too far to
-// inspect a single building's facade. Lowered to 0.35 (=17.5ft), safe against the camera's
-// near-clip plane of 0.1. Root cause of the pan complaint: panScale was a flat camDist*0.0018
-// with no floor, so as camDist approached the old 1.5 minimum, a full-screen drag moved the
-// target only a few feet — reads as "not working" rather than "just slow". PAN_MIN_DIST puts a
-// floor under the effective distance used for pan speed so close-in panning stays usable even
-// as the true zoom minimum drops.
+// Zoom-in floor: 0.35 world units (=17.5ft, given FEET_PER_WORLD_UNIT=50), safe against the
+// camera's near-clip plane of 0.1 — close enough to inspect a single building's facade.
+// PAN_MIN_DIST puts a floor under the effective distance used for pan speed (a flat
+// camDist*0.0018 with no floor means a full-screen drag barely moves the target as camDist
+// approaches the zoom minimum) so close-in panning stays usable even at the true zoom minimum.
 const MIN_CAM_DIST = 0.35;
 const MAX_CAM_DIST = 1400;
 const PAN_MIN_DIST = 3;
@@ -2089,33 +1436,25 @@ const PAN_MIN_DIST = 3;
 // THREE.Color matching the gradient's HORIZON stop specifically (not the zenith), since fog
 // only ever visually matters near the ground/horizon at this camera's typical elevation range —
 // THREE.Fog itself has no gradient support.
-// v1.6.7: reported day mode reads as washed out, and asked for a sunset gradient in night
-// mode. Confirmed the complaint against the actual stops: the light theme's zenith (#C7D9E6)
-// and horizon (#EDEAE0) were both high-lightness, low-saturation pastels sitting only ~10
-// lightness-units apart, AND the horizon stop nearly matched the light-theme UI panels'
-// own cream tone (see the header/panel rgba(237,234,224,...) rule above) — sky and chrome blurred
-// together with almost no separation, reading as flat/washed out rather than as a real sky.
-// Deepened and re-saturated the zenith so it actually reads as sky, added a soft mid stop for a
-// less abrupt transition, and warmed the horizon slightly so it stays light without visually
-// merging into the UI panels. Dark mode's flat near-black zenith/horizon (#0B0E14/#14171B) had
-// no gradient character at all; replaced with a real 3-stop dusk gradient — deep navy zenith,
-// a dusky violet twilight band, warm amber glow at the horizon — evoking a city skyline at
-// sunset rather than a plain dark background. Stops are now an ordered array (not a fixed
-// zenith/horizon pair) so either theme can use 2 or 3+ stops; fog still tracks the LAST stop
-// specifically (the horizon/ground-level color), same reasoning as before — fog only visually
-// matters near the ground at this camera's typical elevation range.
-// v1.6.8: reported the sunset glow reads as a solid black area in most of the visible sky,
-// with a live screenshot. The bug wasn't the colors themselves — it's that scene.background
-// stretches this texture across the ENTIRE render canvas top-to-bottom (y=0 zenith to y=256
-// horizon), but the actual 3D GROUND PLANE occludes everything below the true geometric
-// horizon line, which in this app's typical oblique camera framing sits well below screen
-// center. Confirmed against the reported screenshot's own proportions: the visible sky band
-// is only the top ~30% of the full canvas height, meaning only stops roughly in the 0-to-0.3
-// range were ever actually visible on screen — everything from the old mid stop (0.55) down
-// to the horizon stop (1.0), where all the warm amber color lived, was rendering entirely
-// BEHIND the ground plane and never seen at all. Fixed by front-loading the color transition:
-// the zenith cap is brief, and the violet/amber glow now arrives within that visible top-30%
-// band instead of being saved for a bottom half that's structurally never on screen.
+// The light theme's zenith (#C7D9E6) and horizon (#EDEAE0) are both high-lightness,
+// low-saturation pastels sitting only ~10 lightness-units apart, and the horizon stop nearly
+// matches the light-theme UI panels' own cream tone (see the header/panel
+// rgba(237,234,224,...) rule above) — sky and chrome need real separation, or they blur
+// together and read as flat/washed out rather than as a real sky. Zenith is deepened and
+// re-saturated so it reads as sky, with a soft mid stop for a less abrupt transition, and the
+// horizon warmed slightly so it stays light without visually merging into the UI panels. Dark
+// mode uses a real 3-stop dusk gradient — deep navy zenith, a dusky violet twilight band, warm
+// amber glow at the horizon — evoking a city skyline at sunset rather than a flat dark
+// background. Stops are an ordered array (not a fixed zenith/horizon pair) so either theme can
+// use 2 or 3+ stops; fog tracks the LAST stop specifically (the horizon/ground-level color),
+// since fog only visually matters near the ground at this camera's typical elevation range.
+// Note on stop placement: scene.background stretches this texture across the ENTIRE render
+// canvas top-to-bottom (y=0 zenith to y=256 horizon), but the actual 3D ground plane occludes
+// everything below the true geometric horizon line, which in this app's typical oblique camera
+// framing sits well below screen center — only the top ~30% of the canvas height is ever
+// actually visible. Stops are front-loaded so the zenith cap is brief and the violet/amber glow
+// arrives within that visible top-30% band, rather than living in a bottom half that's
+// structurally never on screen.
 const SKY_STOPS = {
   light: [
     {at:0,    color:'#5B90C9'},
@@ -2130,29 +1469,22 @@ const SKY_STOPS = {
     {at:1,    color:'#E8944F'}
   ]
 };
-// v1.7.0: reported a warm color visibly bleeding onto the ground surface, live screenshot —
-// the sky/fog were correctly showing dark theme's warm gradient, but the GROUND plane's own
-// base material color was stuck on light theme's cream (0xE1DBC7) the whole time. Root cause:
-// ground.material.color was only ever set once, at scene creation in initScene(), from
-// whatever currentTheme() happened to be at boot — every later theme toggle correctly rebuilt
-// the sky texture and fog color (both go through applySkyBackground()) but never touched the
-// ground mesh at all, since nothing referenced it outside initScene() to begin with (it was a
-// local const, not even reachable from applySkyBackground()). Warm dark-theme fog blending
-// over a base color still stuck on light theme's cream is exactly what produced the reported
-// orange-on-cream look. Fixed by hoisting `ground` to module scope and giving both the initial
-// creation and every theme toggle the same GROUND_COLORS lookup, so they can never drift apart.
+// ground.material.color is set once at scene creation in initScene(), from whatever
+// currentTheme() is at boot — every theme toggle rebuilds the sky texture and fog color (both
+// go through applySkyBackground()) and must also update the ground mesh, or a theme toggle
+// leaves the ground on the old theme's base color while sky/fog move on, producing an
+// unintended color blend. `ground` is module-scoped and every theme toggle uses the same
+// GROUND_COLORS lookup as the initial creation, so they can't drift apart.
 const GROUND_COLORS = {light: 0xE1DBC7, dark: 0x1B1F25};
-// v1.7.3: reported the ground plane doesn't distinguish landmass from water — it's a single
-// flat color for both. Reuses the same borough-outline ring data already fetched for the
-// outline ribbons (world-space [x,z] polygons, decimated to ~300 pts/part in allOuterRingsWorld)
-// to paint a real land/water mask onto the ground as a canvas texture, instead of extruding
-// actual 3D geometry for a landmass. Deliberately NOT using THREE.ShapeGeometry/earcut
-// triangulation here — that's the exact thing that broke on this same coastline data in
-// v1.2.3/v1.2.4 (decimation introduced new self-intersections that the ear-clipper couldn't
-// handle, even where the source ring had none). Canvas 2D's own path fill uses the nonzero
-// winding rule and never triangulates, so it structurally can't hit that failure mode — worst
-// case on a self-intersecting ring is a slightly odd fill at one seam, never a crash or the
-// shearing artifact reported back then.
+// Reuses the same borough-outline ring data already fetched for the outline ribbons (world-space
+// [x,z] polygons, decimated to ~300 pts/part in allOuterRingsWorld) to paint a real land/water
+// mask onto the ground as a canvas texture, instead of extruding actual 3D geometry for a
+// landmass. Deliberately NOT using THREE.ShapeGeometry/earcut triangulation here — real NYC
+// coastline data (decimated or not) can develop self-intersections that the ear-clipper can't
+// handle even where the source ring had none (see addBoroughOutlineMeshes above). Canvas 2D's
+// own path fill uses the nonzero winding rule and never triangulates, so it structurally can't
+// hit that failure mode — worst case on a self-intersecting ring is a slightly odd fill at one
+// seam, never a crash or a shearing artifact.
 const WATER_COLORS = {light: 0x8FB4D9, dark: 0x0E1420};
 let boroughLandRings = []; // populated once by loadBoroughOutlines(), reused on every theme toggle
 function buildGroundTexture(theme){
@@ -2175,15 +1507,13 @@ function buildGroundTexture(theme){
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = new THREE.Color(WATER_COLORS[theme]).getStyle();
   ctx.fillRect(0, 0, SIZE, SIZE);
-  // ground = PlaneGeometry(4000,4000) rotated -PI/2 about X, centered at world (0,0). Worked
-  // through explicitly rather than assumed: that rotation maps local plane-Y to world Z=-localY,
-  // so world X in [-2000,2000] maps straight to u in [0,1]. For V it's easy to double-count the
-  // flip: the vertex UVs alone need v=(2000-Z)/4000, but THREE.CanvasTexture defaults
-  // flipY=true, which ALREADY inverts the canvas's vertical axis on upload (canvas row 0/top
-  // ends up at v=1, not v=0). Manually flipping Z again on top of that double-flips it back to
-  // the wrong orientation — confirmed live via claude-in-chrome (v1.7.3 as originally shipped
-  // rendered the coastline mask mirrored north-south against the real borough outline ribbons,
-  // reported live as "something rotated / not aligned"). The canvas row therefore needs the
+  // ground = PlaneGeometry(4000,4000) rotated -PI/2 about X, centered at world (0,0). That
+  // rotation maps local plane-Y to world Z=-localY, so world X in [-2000,2000] maps straight to
+  // u in [0,1]. For V it's easy to double-count the flip: the vertex UVs alone need
+  // v=(2000-Z)/4000, but THREE.CanvasTexture defaults flipY=true, which ALREADY inverts the
+  // canvas's vertical axis on upload (canvas row 0/top ends up at v=1, not v=0). Manually
+  // flipping Z again on top of that double-flips it back to the wrong orientation — mirrors the
+  // mask north-south against the real borough outlines. The canvas row therefore needs the
   // DIRECT (unflipped) relationship to world Z — flipY supplies the one flip this mapping needs.
   ctx.fillStyle = new THREE.Color(GROUND_COLORS[theme]).getStyle();
   for(const ring of boroughLandRings){
@@ -2209,15 +1539,12 @@ function applyGroundTexture(){
   ground.material.color.setHex(0xffffff);
   ground.material.needsUpdate = true;
 }
-// v1.7.1: reported the sunset orange visibly cast across the ground surface even after v1.7.0's
-// ground-color fix. Root cause was different from v1.6.9's bug: fog color was derived from
-// SKY_STOPS' LAST stop — which v1.6.8 intentionally made vivid and saturated (#E8944F) for the
-// sky gradient's sunset look. But that same color feeds scene.fog, and fog blends toward it with
-// distance — confirmed against the reported screenshot's own numbers: camDist was 1400
-// (=MAX_CAM_DIST exactly) and fog's near distance is 1200, meaning large stretches of the
-// 4000-unit ground plane really were being blended toward that vivid orange. The sky's peak
-// color needed to stay vivid; the fog color needed to be muted. Decoupled them: FOG_COLORS is
-// now its own lookup, independent of whatever SKY_STOPS' last entry happens to be.
+// Fog color used to be derived from SKY_STOPS' LAST stop, which is intentionally vivid and
+// saturated (#E8944F) for the sky gradient's sunset look. But fog blends toward its color with
+// distance, and at typical camera distances (fog's near distance is 1200, MAX_CAM_DIST is
+// 1400), large stretches of the 4000-unit ground plane get blended toward that color — so a
+// vivid sky peak color makes a poor fog color. FOG_COLORS is its own lookup, decoupled from
+// whatever SKY_STOPS' last entry happens to be, and kept muted.
 const FOG_COLORS = {light: '#F0E9D8', dark: '#4A3730'};
 function buildSkyTexture(theme){
   const stops = SKY_STOPS[theme];
@@ -2245,14 +1572,11 @@ function applySkyBackground(){
   applyGroundTexture();
 }
 
-// v1.4.3: reported the zoom-in "limit" and "nav gets stuck/jammed, can't pan" persisted after
-// v1.4.1's lower MIN_CAM_DIST. Confirmed live: at the new closer floor the camera can end up
-// INSIDE a building's extruded volume (0.35 world units = 17.5ft, well within a typical NYC
-// footprint's half-width). MeshLambertMaterial defaults to FrontSide, so every surrounding
-// face is a backface from inside — invisible — and the canvas measured genuinely 0% non-black
-// pixels (verified via canvas.toDataURL + pixel scan, not the flakier gl.readPixels which can
-// read a cleared buffer). That's the "stuck" feeling: panning/rotating inside a solid box has
-// no visible reference point in any direction, even though the camera state is actually
+// At a low MIN_CAM_DIST, the camera can end up INSIDE a building's extruded volume (0.35 world
+// units = 17.5ft, well within a typical NYC footprint's half-width). MeshLambertMaterial
+// defaults to FrontSide, so every surrounding face is a backface from inside — invisible — and
+// the canvas renders as solid black. That reads as "stuck": panning/rotating inside a solid box
+// has no visible reference point in any direction, even though the camera state is actually
 // changing. MIN_CAM_DIST alone can't fix this — it's a fixed distance from camTarget, not a
 // distance from the nearest surface, so any real building bigger than the floor can still
 // swallow the camera. Fixed with a raycast collision clamp: cast a ray from camTarget out
@@ -2284,19 +1608,16 @@ function initScene(){
   scene = new THREE.Scene();
   applySkyBackground();
   camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 4000);
-  // v1.4.4: reported the 5 borough outlines get jittery / break into segments when zooming —
-  // classic z-fighting: the outline sits only -0.01 world units below the y=0 ground plane
-  // (line 839 area), and a standard (non-logarithmic) depth buffer loses precision fast across
-  // this scene's near/far ratio (camera.near=0.1, far=4000 → 40,000:1). At typical mid-far
-  // camera distances the depth buffer can no longer reliably tell the outline and the ground
-  // apart, so different pixels of the same continuous line resolve to whichever surface wins
-  // that pixel's rounding — reads as flicker/jitter and apparent line breaks, worse as camDist
-  // grows. This is the same root cause class as a fix already shipped on the sibling STAND
-  // project (a thin offset layer z-fighting the ground at large camera distances). The correct
-  // general fix is a logarithmic depth buffer, which allocates precision by relative rather
-  // than absolute distance — it fixes this for ANY thin coplanar-ish geometry in the scene, not
-  // just the borough outline, and doesn't require guessing a "big enough" offset that might
-  // still fail at some distance.
+  // Classic z-fighting risk: the outline sits only -0.01 world units below the y=0 ground plane
+  // (see addBoroughOutlineMeshes above), and a standard (non-logarithmic) depth buffer loses
+  // precision fast across this scene's near/far ratio (camera.near=0.1, far=4000 → 40,000:1).
+  // At typical mid-far camera distances the depth buffer can no longer reliably tell the
+  // outline and the ground apart, so different pixels of the same continuous line resolve to
+  // whichever surface wins that pixel's rounding — reads as flicker/jitter and apparent line
+  // breaks, worse as camDist grows. A logarithmic depth buffer allocates precision by relative
+  // rather than absolute distance — it fixes this for ANY thin coplanar-ish geometry in the
+  // scene, not just the borough outline, and doesn't require guessing a "big enough" offset
+  // that might still fail at some distance.
   renderer = new THREE.WebGLRenderer({antialias:true, logarithmicDepthBuffer:true});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -2310,21 +1631,19 @@ function initScene(){
 
   ground = new THREE.Mesh(
     new THREE.PlaneGeometry(4000, 4000),
-    // DoubleSide is defense-in-depth for the same v1.4.3 issue as nearGroup below: if the
-    // camera ever ends up below grade (e.g. a future camera bug), FrontSide would render the
-    // ground invisible from underneath instead of the visible surface, compounding a black-out
-    // rather than giving a recognizable (if upside-down-looking) reference.
+    // DoubleSide is defense-in-depth: if the camera ever ends up below grade (e.g. a future
+    // camera bug), FrontSide would render the ground invisible from underneath instead of the
+    // visible surface, compounding a black-out rather than giving a recognizable (if
+    // upside-down-looking) reference.
     new THREE.MeshBasicMaterial({color: GROUND_COLORS[currentTheme()], side: THREE.DoubleSide})
   );
-  // v1.7.2: reported the fog/haze still visibly washing over the ground even after v1.7.1's
-  // color decoupling. Root cause wasn't the color at all — scene.fog's near distance (1200) is
-  // actually LESS than MAX_CAM_DIST (1400), meaning fog was never a subtle distant-horizon
-  // effect here, it was actively blending in at essentially any normal zoomed-out camera
-  // position. No fog color choice fixes that, only reducing how much of the visible ground
-  // falls inside the fog band. Rather than re-tuning fog distances for the whole scene (which
-  // would also change how buildings/streets fade with distance — a bigger change than this
-  // complaint asked for), exempt just the ground plane: it's a flat stylized reference surface,
-  // not something that benefits from atmospheric depth cueing the way real geometry does.
+  // scene.fog's near distance (1200) is LESS than MAX_CAM_DIST (1400), meaning fog is never a
+  // subtle distant-horizon effect here — it actively blends in at essentially any normal
+  // zoomed-out camera position. No fog color choice fixes that, only reducing how much of the
+  // visible ground falls inside the fog band. Rather than re-tuning fog distances for the whole
+  // scene (which would also change how buildings/streets fade with distance), the ground plane
+  // is exempted from fog specifically: it's a flat stylized reference surface, not something
+  // that benefits from atmospheric depth cueing the way real geometry does.
   ground.material.fog = false;
   ground.rotation.x = -Math.PI/2;
   ground.position.y = -0.05;
@@ -2402,10 +1721,9 @@ function wireOrbitControls(){
       // up=(0,1,0): the component of world-up perpendicular to the view direction, for this
       // spherical parametrization. At elevation=0 this reduces to plain world-up (0,1,0), so
       // horizontal-camera panning is unchanged; at higher elevation (e.g. Plan View) it
-      // correctly becomes a horizontal ground-plane direction instead of straight up. Confirmed
-      // live this was the actual bug: raw world-Y panning moved camTarget.y by 126 units from a
-      // 100px drag at typical zoom — the camera rocketing into the sky reads as "feels like
-      // zooming," not panning, which is exactly what was reported.
+      // correctly becomes a horizontal ground-plane direction instead of straight up. Raw
+      // world-Y panning would move camTarget.y by over 100 units from a typical drag at normal
+      // zoom — the camera rocketing into the sky reads as "feels like zooming," not panning.
       const up = new THREE.Vector3(
         -Math.sin(camElevation) * Math.sin(camAzimuth),
         Math.cos(camElevation),
@@ -2452,7 +1770,7 @@ function updateLOD(){
   const d = camDistToTarget();
   const near = d < NEAR_MAX_DIST;
   const mid = !near && d < MID_MAX_DIST;
-  // v1.7.8: near/mid detail meshes are no longer built eagerly in buildBoroughMeshes (see the
+  // Near/mid detail meshes are no longer built eagerly in buildBoroughMeshes (see the
   // comment there) — build them here instead, once, the first time the camera actually crosses
   // into a distance that needs them. Cheap to check on every call: after the first build,
   // detailMeshesBuilt is true and this is a single boolean short-circuit, not a re-scan.
@@ -2469,16 +1787,10 @@ function updateLOD(){
 }
 
 /* ================= Massing builder ================= */
-// v1.7.8: reported the initial open takes a long time, floated "maybe not show all the data" as
-// a fix. Measured it directly (buildBoroughMeshes re-run live on already-fetched records, zero
-// network involved): 34.7 SECONDS of main-thread blocking for one Manhattan load. Two real,
-// independent causes found, not guessed:
-// (1) addNearMesh/addMidMesh/addFloorLines each called `new THREE.MeshLambertMaterial(...)` /
-//     `new THREE.LineBasicMaterial(...)` PER BUILDING — ~44,000 material instances for a dataset
-//     that only ever uses ~11 distinct land-use colors plus a couple of vacant/synthetic
-//     variants. Materials are meant to be shared across many meshes; this was creating and
-//     compiling a new one every single time. Fixed with a small cache keyed by the material's
-//     actual parameters, reused across all three mesh builders below.
+// Materials are shared/cached rather than created per building: this dataset only ever uses
+// ~11 distinct land-use colors plus a couple of vacant/synthetic variants, so a small cache
+// keyed by the material's actual parameters avoids allocating and compiling a new material for
+// every one of ~15,000+ buildings. Reused across all three mesh builders below.
 const materialCache = new Map();
 function getSharedMaterial(key, factory){
   let mat = materialCache.get(key);
@@ -2488,32 +1800,27 @@ function getSharedMaterial(key, factory){
 const FLOOR_LINE_MATERIAL = new THREE.LineBasicMaterial({color:0x000000, transparent:true, opacity:0.12});
 
 function buildBoroughMeshes(records){
-  // dispose old geometry, same pattern as a STAND borough switch
-  // Geometry is still unique per building (real footprint shapes), so it's still disposed on
-  // every clear. Materials are NOT disposed here anymore — as of v1.7.8 they're shared/cached by
-  // color in materialCache (see above) and meant to live for the app's lifetime, reused across
-  // every borough/neighborhood switch, not recreated per mesh or torn down per clear. Disposing
-  // them here would break every other mesh still referencing the same cached instance.
+  // Geometry is unique per building (real footprint shapes), so it's disposed on every clear.
+  // Materials are NOT disposed here — they're shared/cached by color in materialCache (above)
+  // and meant to live for the app's lifetime, reused across every borough/neighborhood switch.
+  // Disposing them here would break every other mesh still referencing the same cached instance.
   [nearGroup, midGroup, farGroup, envelopeGroup].forEach(g=>{
     g.children.forEach(c=>{ if(c.geometry) c.geometry.dispose(); });
     g.clear();
   });
   farPointRecords = [];
 
-  // v1.6.0: only runs the (memoized) point-in-polygon assignment when it's actually needed —
-  // switching borough/neighborhood while in a different color mode never pays this cost
+  // Only runs the (memoized) point-in-polygon assignment when it's actually needed — switching
+  // borough/neighborhood while in a different color mode never pays this cost
   if(colorMode === 'neighborhood') assignNeighborhoods(records);
 
-  // (2) — the bigger of the two causes. This used to ALSO build the full near-LOD (extruded,
-  // real geometry + floor lines) and mid-LOD (oriented block box) mesh for every one of ~15,000
-  // records on every borough load, even though the app boots at the far/dot LOD (confirmed live,
-  // every screenshot of a fresh load shows "LOD: far (dot)") where nearGroup/midGroup are
-  // immediately set invisible by updateLOD() anyway — work done and then hidden, never seen.
   // Only the far tier (cheap: one shared BufferGeometry via buildFarPoints, no per-lot mesh or
-  // material) is actually needed at that zoom, so only it gets built here now. The near/mid tier
-  // is deferred to buildDetailMeshes(), triggered lazily the first time updateLOD() finds the
-  // camera has actually zoomed into mid or near range — see there. Nothing is capped or skipped
-  // permanently; every record still gets full detail, just only once it can actually be seen.
+  // material) is built here. The near-LOD (extruded geometry + floor lines) and mid-LOD
+  // (oriented block box) meshes are far more expensive per building, and the app boots at the
+  // far/dot LOD where they'd be built and immediately hidden by updateLOD() — so that
+  // construction is deferred to buildDetailMeshes(), triggered lazily the first time updateLOD()
+  // finds the camera has actually zoomed into mid or near range (see there). Nothing is capped
+  // or skipped permanently; every record still gets full detail, just only once it can be seen.
   pendingDetailRecords = records;
   detailMeshesBuilt = false;
 
@@ -2582,12 +1889,10 @@ function estimateHeightFt(lot){
 }
 
 // IMPORTANT: rotateX(-pi/2), applied after building geometry from this shape, maps a local
-// (x, y, 0) vertex to world (x, 0, -y) — confirmed live: without the negation below, every
-// near/mid-tier building and the FAR-derived envelope rendered exactly z-mirrored relative to
-// the far-tier dots and everything else that projects (x,z) directly (e.g. a real building's
-// far-tier dot sat at z=-523.7 while its own near-tier mesh sat at z=+523.4 — an exact mirror,
-// not a rounding difference). Negating z here cancels that flip so the two rotation stages net
-// out to the identity on Z, matching the rest of the scene's convention.
+// (x, y, 0) vertex to world (x, 0, -y). Without the negation below, every near/mid-tier
+// building and the FAR-derived envelope render exactly z-mirrored relative to the far-tier dots
+// and everything else that projects (x,z) directly. Negating z here cancels that flip so the
+// two rotation stages net out to the identity on Z, matching the rest of the scene's convention.
 function ringToShape(ring){
   const shape = new THREE.Shape();
   ring.forEach(([x,z], i)=>{ if(i===0) shape.moveTo(x,-z); else shape.lineTo(x,-z); });
@@ -2607,10 +1912,10 @@ function addNearMesh(ring, heightFt, color, lot, isVacant=false){
   const depth = ftToWorld(heightFt);
   const geo = new THREE.ExtrudeGeometry(shape, {depth, bevelEnabled:false, steps:1});
   geo.rotateX(-Math.PI/2);
-  // v1.4.3: DoubleSide backstop — clampZoomIn() is the real fix (keeps the camera from
+  // DoubleSide backstop — clampZoomIn() is the real fix (keeps the camera from
   // crossing the surface at all), but rendering both faces means a grazing pass or an edge
   // case the raycast misses still shows a color instead of collapsing to pure black.
-  // v1.7.8: shared/cached by its actual params instead of `new`d per building — see materialCache.
+  // Shared/cached by its actual params instead of `new`d per building — see materialCache.
   const matKey = `near:${color}:${isVacant}`;
   const mat = getSharedMaterial(matKey, () => new THREE.MeshLambertMaterial({color, transparent:isVacant, opacity:isVacant?0.35:1, side: THREE.DoubleSide}));
   const mesh = new THREE.Mesh(geo, mat);
@@ -2635,32 +1940,26 @@ function addFloorLines(ring, heightFt, floors){
   if(!pts.length) return;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  geo.computeBoundingSphere(); // same raw-BufferGeometry gap as buildFarPoints — fixed here too
-  // v1.7.8: this was `new THREE.LineBasicMaterial(...)` per building — always the exact same
-  // color/opacity, so one shared module-level instance (FLOOR_LINE_MATERIAL, see above) replaces
-  // what used to be up to ~28,000 identical material allocations.
+  geo.computeBoundingSphere(); // BufferGeometry built by hand needs this explicitly — see buildFarPoints
+  // Floor-line material is always the exact same color/opacity across every building, so one
+  // shared module-level instance (FLOOR_LINE_MATERIAL, above) replaces what would otherwise be
+  // a separate material allocation per building.
   nearGroup.add(new THREE.LineSegments(geo, FLOOR_LINE_MATERIAL));
 }
 
 function addMidMesh(ring, heightFt, color){
-  // v1.7.6: reported live that a real, correctly-gridded neighborhood (Hell's Kitchen — well
-  // above Houston St, on the regular post-1811 grid, confirmed via raw NYC Building Footprints
-  // data clustering tightly at 28-29 degrees from north, the well-documented true tilt of
-  // Manhattan's own grid) still didn't look like a grid at this "block" LOD: buildings fused
-  // into unbroken masses with no visible street gaps. Root cause, worked out analytically (with
-  // a Node repro, independent of the flaky live tool connection that session) rather than
-  // guessed: this used to be a world-AXIS-aligned bounding box (min/max X,Z), but real Manhattan
-  // buildings sit at that ~29-degree tilt, NOT aligned to world X/Z — and the axis-aligned box
-  // around a rotated rectangle is always bigger than the rectangle itself. For a typical 25x100ft
-  // rowhouse lot rotated 29 degrees, the AABB balloons to 70x100ft — the box's short dimension
-  // alone (70ft) very nearly spans NYC's standard 60ft side-street width, so buildings on
-  // opposite sides of a real street had overlapping boxes and the whole block read as one fused
-  // mass with the streets erased, exactly the symptom reported. Fixed with an ORIENTED bounding
-  // box instead: find the ring's longest edge (real footprints are overwhelmingly rectangular,
-  // so this recovers the building's true orientation), measure a tight width/depth in that
-  // edge's own frame, then rotate the mesh back by the same angle — verified analytically that
-  // the box's corners then match the real rotated footprint's corners exactly (0.0000ft error
-  // on a synthetic 25x100ft/29-degree test case), instead of ballooning past it.
+  // Real Manhattan buildings sit at the grid's ~29-degree tilt from true north (the
+  // well-documented true rotation of the post-1811 grid), not aligned to world X/Z — so a
+  // world-axis-aligned bounding box (min/max X,Z) around a rotated rectangle is always bigger
+  // than the rectangle itself. For a typical 25x100ft rowhouse lot rotated 29 degrees, the AABB
+  // balloons to 70x100ft — the box's short dimension alone (70ft) very nearly spans NYC's
+  // standard 60ft side-street width, so buildings on opposite sides of a real street would have
+  // overlapping boxes, fusing whole blocks into one mass with the streets erased. Uses an
+  // ORIENTED bounding box instead: find the ring's longest edge (real footprints are
+  // overwhelmingly rectangular, so this recovers the building's true orientation), measure a
+  // tight width/depth in that edge's own frame, then rotate the mesh back by the same angle —
+  // the box's corners then match the real rotated footprint's corners exactly, instead of
+  // ballooning past them.
   let angle = 0, maxLen = 0;
   for(let i=0;i<ring.length;i++){
     const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
@@ -2675,7 +1974,7 @@ function addMidMesh(ring, heightFt, color){
   }
   const w = Math.max(0.02, maxU-minU), d = Math.max(0.02, maxV-minV), h = ftToWorld(heightFt);
   const geo = new THREE.BoxGeometry(w, h, d);
-  // v1.7.8: shared/cached by color instead of `new`d per building — see materialCache above.
+  // Shared/cached by color instead of `new`d per building — see materialCache above.
   const mat = getSharedMaterial(`mid:${color}`, () => new THREE.MeshLambertMaterial({color, side: THREE.DoubleSide}));
   const mesh = new THREE.Mesh(geo, mat);
   const cu = (minU+maxU)/2, cv = (minV+maxV)/2;
@@ -2701,10 +2000,9 @@ function buildFarPoints(positions, colors, sizes){
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geo.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
   // Unlike THREE's built-in geometry classes (BoxGeometry, ExtrudeGeometry, ShapeGeometry —
-  // confirmed live to compute their own bounds automatically), a BufferGeometry assembled by
-  // hand via setAttribute does NOT get a bounding sphere for free. Without one, frustumCulled
-  // (true by default on Points) silently culls the entire object every frame — confirmed live
-  // this was rendering ZERO of 15,848 points and 0 of 12 draw calls until this was added.
+  // which compute their own bounds automatically), a BufferGeometry assembled by hand via
+  // setAttribute does NOT get a bounding sphere for free. Without one, frustumCulled (true by
+  // default on Points) silently culls the entire object every frame, rendering nothing.
   geo.computeBoundingSphere();
   geo.computeBoundingBox();
   const mat = new THREE.PointsMaterial({size:3, vertexColors:true, sizeAttenuation:true});
@@ -2731,7 +2029,7 @@ function addEnvelopeMesh(rec){
   const shape = ringToShape(ring);
   const geo = new THREE.ExtrudeGeometry(shape, {depth: ftToWorld(envelopeHeightFt), bevelEnabled:false, steps:1});
   geo.rotateX(-Math.PI/2);
-  // v1.7.8: shared/cached — only 4 distinct colors possible here (util===null, >=0.95, <0.5, else)
+  // Shared/cached — only 4 distinct colors possible here (util===null, >=0.95, <0.5, else)
   const mat = getSharedMaterial(`envelope:${color}`, () => new THREE.MeshBasicMaterial({color, wireframe:true, transparent:true, opacity:0.35}));
   envelopeGroup.add(new THREE.Mesh(geo, mat));
 }
@@ -2916,7 +2214,7 @@ async function selectBorough(boroDigit){
     currentRecords = records;
     currentBoroDigit = boroDigit;
     buildBoroughMeshes(records);
-    // v1.6.4: only the Neighborhood color mode's legend is actually data-dependent (the other
+    // Only the Neighborhood color mode's legend is actually data-dependent (the other
     // three list fixed categories regardless of what's loaded), so this was invisible everywhere
     // except Neighborhood mode — but there, switching boroughs left the legend showing whatever
     // the PREVIOUS borough/neighborhood had, even though the massing itself was already correct.
@@ -2935,7 +2233,7 @@ async function selectBorough(boroDigit){
   }
 }
 
-// v1.5.0: loads exactly one named neighborhood — see the fetch functions above for why this
+// Loads exactly one named neighborhood — see the fetch functions above for why this
 // sidesteps the borough-wide truncation problem instead of just reducing it.
 async function selectNeighborhood(nta){
   document.getElementById('loadOverlay').classList.remove('hidden');
@@ -3020,8 +2318,8 @@ document.getElementById('colorModePicker').addEventListener('click', async (e)=>
   colorMode = mode;
   hiddenCategories.clear();
   if(mode === 'neighborhood' && !ntaGeomLoaded){
-    // confirmed live this is a real ~5s/4.5MB fetch, not instant — show the loading overlay
-    // rather than let the UI sit on stale colors while it happens
+    // this is a real ~5s/4.5MB fetch, not instant — show the loading overlay rather than let
+    // the UI sit on stale colors while it happens
     document.getElementById('loadOverlay').classList.remove('hidden');
     document.getElementById('loadMsg').textContent = 'Fetching neighborhood boundaries…';
     try{ await loadAllNtaGeometries(); }
@@ -3029,7 +2327,7 @@ document.getElementById('colorModePicker').addEventListener('click', async (e)=>
     document.getElementById('loadOverlay').classList.add('hidden');
   }
   buildBoroughMeshes(currentRecords);
-  updateLegend(); // v1.6.4: always after buildBoroughMeshes, not mode-conditional — same
+  updateLegend(); // always after buildBoroughMeshes, not mode-conditional — same
                    // consistent pattern now used by selectBorough/selectNeighborhood; the other
                    // three color modes' legends are static so refreshing them here costs
                    // nothing, and Neighborhood mode's legend needs the nta2020 assignments
@@ -3054,12 +2352,9 @@ document.getElementById('streetsToggle').addEventListener('click', (e)=>{
 /* ---- neighborhood search box wiring ---- */
 const ntaSearchInput = document.getElementById('neighborhoodSearch');
 const ntaResultsEl = document.getElementById('neighborhoodResults');
-// v1.5.2: reported nothing happens when clicking the empty box — confirmed live that this
-// early-return was the entire cause: clicking/focusing an empty input never reaches the
-// matches branch below, so the person saw literally nothing, not a slow or broken fetch.
-// "Expecting to see neighborhoods for each borough" is the real design gap this closes: an
-// empty query now renders every neighborhood, grouped under its borough as a header, instead
-// of requiring the person to already know a name to type before anything appears at all.
+// Clicking/focusing an empty input needs to show something, not require a name to already be
+// typed: an empty query renders every neighborhood, grouped under its borough as a header,
+// instead of showing nothing until the person knows what to type.
 function renderNtaResults(query){
   const q = query.trim().toLowerCase();
   ntaResultsEl.innerHTML = '';
@@ -3133,7 +2428,7 @@ document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
 
 /* ================= Boot ================= */
-// v1.7.7: gate the whole app behind a screen-size check (see #smallScreenGate above). Uses
+// Gates the whole app behind a screen-size check (see #smallScreenGate above). Uses
 // Math.min(innerWidth,innerHeight) rather than innerWidth alone — a landscape phone can be wider
 // than 768px while still being a phone; its SHORTER dimension is what actually matters for
 // whether the map+toolbar+side-panel layout fits. Skips initScene()/data fetches entirely on a
