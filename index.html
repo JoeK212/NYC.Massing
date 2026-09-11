@@ -7,6 +7,12 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.7.9 - Fixed a freeze on first zoom-in: v1.7.8 moved full-detail building construction off
+    the initial load, but it still ran as one uninterrupted block the first time it was needed,
+    which could take upwards of 25-30s on a full borough and locked up the tab for that whole
+    stretch. Detail construction now runs in short time-boxed chunks that yield back to the
+    browser between batches, so buildings appear progressively with a visible progress readout
+    instead of the page appearing to hang.
   v1.7.8 - Cut initial load time by ~60x: materials are now shared by color instead of allocated
     per building, and full-detail (near/mid LOD) building geometry is built lazily the first time
     the camera zooms in close enough to need it, instead of upfront for every lot on every load.
@@ -503,7 +509,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.7.8'; // keep in sync with the header changelog block and the footer tag below
+const APP_VERSION = '1.7.9'; // keep in sync with the header changelog block and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1770,12 +1776,13 @@ function updateLOD(){
   const d = camDistToTarget();
   const near = d < NEAR_MAX_DIST;
   const mid = !near && d < MID_MAX_DIST;
-  // Near/mid detail meshes are no longer built eagerly in buildBoroughMeshes (see the
-  // comment there) — build them here instead, once, the first time the camera actually crosses
-  // into a distance that needs them. Cheap to check on every call: after the first build,
-  // detailMeshesBuilt is true and this is a single boolean short-circuit, not a re-scan.
-  if((near || mid) && !detailMeshesBuilt && pendingDetailRecords){
-    detailMeshesBuilt = true;
+  // Near/mid detail meshes are no longer built eagerly in buildBoroughMeshes (see the comment
+  // there) — build them here instead, once, the first time the camera actually crosses into a
+  // distance that needs them. buildDetailMeshes() is itself chunked/async now (see there), so
+  // detailMeshesBuilt only flips true once it actually finishes — detailBuildInProgress is what
+  // stops this from re-triggering a second concurrent build on every camera-move frame while
+  // the first one is still in flight.
+  if((near || mid) && !detailMeshesBuilt && !detailBuildInProgress && pendingDetailRecords){
     buildDetailMeshes(pendingDetailRecords);
   }
   nearGroup.visible = near;
@@ -1823,6 +1830,10 @@ function buildBoroughMeshes(records){
   // or skipped permanently; every record still gets full detail, just only once it can be seen.
   pendingDetailRecords = records;
   detailMeshesBuilt = false;
+  detailBuildInProgress = false; // the flag itself resets immediately; any actual in-flight
+                                  // closure still checks its captured generation (bumped next)
+                                  // and bails on its own next batch rather than being torn down
+  detailBuildGeneration++;
 
   const farPositions = [], farColors = [], farSizes = [];
   for(const rec of records){
@@ -1846,32 +1857,67 @@ function buildBoroughMeshes(records){
   updateLOD();
 }
 
-let pendingDetailRecords = null, detailMeshesBuilt = false;
+let pendingDetailRecords = null, detailMeshesBuilt = false, detailBuildInProgress = false, detailBuildGeneration = 0;
 function buildDetailMeshes(records){
-  // the near/mid construction loop this project always had, just moved out of the critical path
-  // of a fresh borough load and run lazily instead — see the comment on buildBoroughMeshes above
-  for(const rec of records){
-    const lot = rec.lot;
-    if(hiddenCategories.has(categoryForLot(rec))) continue;
-    const color = colorForLot(rec, colorMode);
-    const hasFootprints = rec.footprints && rec.footprints.length > 0;
-    if(hasFootprints){
-      for(const fp of rec.footprints){
-        const ring = outerRingWorld(fp.the_geom);
-        if(!ring || ring.length < 3) continue;
-        const heightFt = Number(fp.height_roof) || estimateHeightFt(lot);
-        addNearMesh(ring, heightFt, color, lot);
-        addMidMesh(ring, heightFt, color);
+  // Extruding a real footprint into full 3D geometry (near-LOD) is genuinely expensive per
+  // building — profiling on a 15,000-lot Manhattan load found ~22s in ExtrudeGeometry
+  // construction alone, ~5s in floor lines, ~3s in the mid-tier oriented box, all as ONE
+  // synchronous call. That doesn't just feel slow, it freezes the tab and the render loop with
+  // it for the whole duration — the browser can't paint or respond to input until it returns.
+  // Chunked instead: each batch does a time-boxed slice of the work (not a fixed record count,
+  // since per-building cost varies with footprint complexity), then yields via setTimeout so the
+  // existing requestAnimationFrame render loop gets a turn — buildings appear progressively
+  // instead of the tab going unresponsive for the whole duration. Total compute time is
+  // essentially unchanged; what changes is that the browser stays alive and visibly making
+  // progress throughout it.
+  // detailBuildGeneration guards against a borough/neighborhood switch (or a showEnvelope/color
+  // mode toggle, both of which also call buildBoroughMeshes) landing WHILE a previous chunked
+  // build is still mid-flight: buildBoroughMeshes bumps the generation counter on every call, so
+  // an in-flight batch here checks its own captured generation against the current one and
+  // aborts silently the moment it's superseded, rather than continuing to add meshes for records
+  // that already got cleared out from under it.
+  const myGeneration = detailBuildGeneration;
+  detailBuildInProgress = true;
+  let index = 0;
+  document.getElementById('loadOverlay').classList.remove('hidden');
+
+  function processBatch(){
+    if(myGeneration !== detailBuildGeneration) return; // superseded — a newer load has since started
+    const batchStart = performance.now();
+    while(index < records.length && performance.now() - batchStart < 40){
+      const rec = records[index++];
+      const lot = rec.lot;
+      if(hiddenCategories.has(categoryForLot(rec))) continue;
+      const color = colorForLot(rec, colorMode);
+      const hasFootprints = rec.footprints && rec.footprints.length > 0;
+      if(hasFootprints){
+        for(const fp of rec.footprints){
+          const ring = outerRingWorld(fp.the_geom);
+          if(!ring || ring.length < 3) continue;
+          const heightFt = Number(fp.height_roof) || estimateHeightFt(lot);
+          addNearMesh(ring, heightFt, color, lot);
+          addMidMesh(ring, heightFt, color);
+        }
+      } else {
+        const ring = syntheticLotRing(lot);
+        if(ring){
+          addNearMesh(ring, 2, 0x9C9587, lot, true);
+          addMidMesh(ring, 2, 0x9C9587);
+        }
       }
-    } else {
-      const ring = syntheticLotRing(lot);
-      if(ring){
-        addNearMesh(ring, 2, 0x9C9587, lot, true);
-        addMidMesh(ring, 2, 0x9C9587);
-      }
+      if(showEnvelope) addEnvelopeMesh(rec);
     }
-    if(showEnvelope) addEnvelopeMesh(rec);
+    document.getElementById('loadMsg').textContent =
+      `Building full massing… ${index.toLocaleString()} / ${records.length.toLocaleString()}`;
+    if(index < records.length){
+      setTimeout(processBatch, 0);
+    } else {
+      detailMeshesBuilt = true;
+      detailBuildInProgress = false;
+      document.getElementById('loadOverlay').classList.add('hidden');
+    }
   }
+  processBatch();
 }
 
 function syntheticLotRing(lot){
