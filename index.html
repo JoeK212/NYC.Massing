@@ -1,515 +1,249 @@
 <!DOCTYPE html>
 <!--
-  MASSING
-  Real NYC building massing grown from actual PLUTO/Building Footprints records — one extruded
-  volume per tax lot, from its real recorded height and footprint, with its allowed zoning
-  envelope (FAR-derived) rendered alongside it.
+  PALETTE & PLAN
+  Configurable dorm room planner — drag real furniture into a scaled floor plan, palette-matched and priced as you go.
   Joe.K · axisbim.io
-
-  CHANGELOG
-  v1.7.9 - Fixed a freeze on first zoom-in: v1.7.8 moved full-detail building construction off
-    the initial load, but it still ran as one uninterrupted block the first time it was needed,
-    which could take upwards of 25-30s on a full borough and locked up the tab for that whole
-    stretch. Detail construction now runs in short time-boxed chunks that yield back to the
-    browser between batches, so buildings appear progressively with a visible progress readout
-    instead of the page appearing to hang.
-  v1.7.8 - Cut initial load time by ~60x: materials are now shared by color instead of allocated
-    per building, and full-detail (near/mid LOD) building geometry is built lazily the first time
-    the camera zooms in close enough to need it, instead of upfront for every lot on every load.
-  v1.7.7 - Added a small-screen gate; the map, toolbar, and side panels need a tablet or larger.
-  v1.7.6 - Fixed block-LOD buildings on grid-aligned blocks fusing into one mass with no visible
-    streets — the block box is now oriented to each building's real footprint angle instead of
-    axis-aligned to world coordinates.
-  v1.7.4 - Fixed the land/water ground texture rendering mirrored north-south.
-  v1.7.3 - Added a land/water color distinction to the ground plane, generated from real borough
-    coastline data.
-  v1.7.0-v1.7.2 - Fixed residual fog/haze and an orange color cast on the ground at normal zoom.
-  v1.6.9 - Parallelized data pagination for faster loads.
-  v1.6.5-v1.6.8 - Fixed the day/night sky gradients, a stylesheet-breaking typo, borough labels
-    sinking into the ground, and the navigation panel disappearing under certain layouts.
-  v1.6.0-v1.6.4 - Added a major-streets overlay and a Neighborhood color mode; general load-time
-    optimizations (parallel fetches, localStorage caching for citywide layers); documentation and
-    legend fixes.
-  v1.5.0-v1.5.3 - Fixed the neighborhood search box and some buildings not rendering at certain
-    zoom levels; confirmed bare-looking areas reflect real data gaps, not missing data.
-  v1.4.0-v1.4.8 - Camera/zoom/pan fixes, discrete FAR and Year-Built color buckets, full borough
-    name labels, and several passes on borough-outline rendering (jitter, faint lines, shearing).
-  v1.3.0 - Reorganized the control layout; added in-app help documentation.
-  v1.2.0-v1.2.5 - Added Plan View, recenter, and a north compass; fixed borough-outline geometry
-    shearing (added coastline ring decimation) and a ghosting/z-fighting artifact.
-  v1.1.0 - Added camera orbit/pan/zoom controls.
-  v1.0.1-v1.0.3 - Fixed a blank canvas on load, a renderer resize bug, and a persistent 403 caused
-    by treating MapPLUTO as the wrong Socrata resource type.
-  v1.0.0 - Initial build: borough-scoped fetch from NYC Open Data (MapPLUTO joined to Building
-    Footprints on BBL), real footprint extrusion to real recorded height, FAR-derived zoning
-    envelope overlay, three color modes (Land Use / FAR Utilization / Year Built), near/mid/far
-    camera-distance LOD, click-to-inspect, vacant/no-footprint lots rendered as flat markers.
 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="description" content="Real NYC building massing grown from PLUTO tax lot records, alongside each lot's FAR-derived zoning envelope.">
+<meta name="description" content="Configurable dorm room planner — drag real furniture into a scaled floor plan, palette-matched and priced as you go.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Massing">
-<meta name="theme-color" content="#EDEAE0" id="themeColorMeta">
-<title>MASSING — NYC building massing from PLUTO</title>
-<!-- Every load pays full DNS+TCP+TLS negotiation for both
-     origins from a cold start — cdnjs.cloudflare.com only gets contacted once the browser
-     reaches the <script src> tag near the end of <body>, and data.cityofnewyork.us only gets
-     contacted once boot() fires its first fetch(), both well after this point in parsing.
-     preconnect lets the browser open both connections in parallel with parsing the rest of the
-     head/CSS, so by the time either is actually needed the handshake is already done or well
-     underway — a real ~100-300ms-per-origin saving on the critical path of every cold load,
-     not just repeat visits (localStorage caching mainly helps those instead). -->
-<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
-<link rel="preconnect" href="https://data.cityofnewyork.us" crossorigin>
+<meta name="apple-mobile-web-app-title" content="Palette & Plan">
+<meta name="theme-color" content="#0E1220" id="themeColorMeta">
+<title>Palette & Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
-    --paper: #EDEAE0;
-    --paper-deep: #E1DBC7;
-    --card: #F8F6EE;
-    --ink: #201E1A;
-    --ink-soft: #6B6355;
-    --line: #D2C9B0;
-    --accent: #1F4E79;
-    --accent-deep: #163A5C;
-    --warn: #B23A2E;
-    --ok: #3E7A4C;
-    --shadow: 0 1px 0 rgba(32,30,26,0.05), 0 6px 16px -8px rgba(32,30,26,0.28);
-    --font-display: 'Fraunces', serif;
-    --font-body: 'Source Serif 4', Georgia, serif;
-    --font-ui: 'Space Grotesk', 'Inter', sans-serif;
-    --font-mono: 'Space Mono', monospace;
-  }
-  :root[data-theme="dark"]{
-    --paper: #14171B;
-    --paper-deep: #1B1F25;
-    --card: #1E2329;
-    --ink: #E7E5DC;
-    --ink-soft: #8C93A0;
-    --line: #2C323B;
-    --accent: #6FA8DC;
-    --accent-deep: #8FBCE6;
+    /* Night — default */
+    --paper: #0E1220;
+    --paper-deep: #090C17;
+    --card: #141829;
+    --ink: #E7E4F4;
+    --ink-soft: #A9A4C4;
+    --line: #363B5C;
+    --accent: #7C5CFC;
+    --accent-deep: #6A4AE0;
+    --accent-soft: rgba(124,92,252,0.16);
     --shadow: 0 1px 0 rgba(0,0,0,0.4), 0 8px 22px -10px rgba(0,0,0,0.7);
+    --font-display: 'Fraunces', serif;
+    --font-body: 'Inter', sans-serif;
+    --font-ui: 'Inter', sans-serif;
+    /* Plan canvas stays dark in both themes */
+    --plan-canvas: #0E1220;
+    --plan-line: #8F7EFF;
+    --plan-line-soft: rgba(143,126,255,0.24);
   }
+  :root[data-theme="light"]{
+    /* Day — toggled */
+    --paper: #F5F3FA;
+    --paper-deep: #EDE9F6;
+    --card: #FFFFFF;
+    --ink: #221E2E;
+    --ink-soft: #6B6580;
+    --line: #DAD4EC;
+    --accent: #7C5CFC;
+    --accent-deep: #6A4AE0;
+    --accent-soft: rgba(124,92,252,0.10);
+    --shadow: 0 1px 0 rgba(34,30,46,0.04), 0 8px 22px -10px rgba(34,30,46,0.18);
+  }
+
   *{box-sizing:border-box;}
   html{-webkit-text-size-adjust:100%;}
   body{
-    margin:0; background:var(--paper); color:var(--ink); font-family:var(--font-body);
-    min-height:100vh; overflow:hidden;
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--font-body);
+    min-height:100vh;
+    transition:background-color 0.25s ease, color 0.25s ease;
     overscroll-behavior-y:contain;
-    padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right);
+    padding-left:env(safe-area-inset-left);
+    padding-right:env(safe-area-inset-right);
+    -webkit-font-smoothing:antialiased;
   }
   a{color:inherit;}
-  button, select{font-family:var(--font-ui); cursor:pointer;}
+  button{font-family:var(--font-ui); cursor:pointer;}
   ::selection{background:var(--accent); color:#fff;}
   :focus-visible{outline:3px solid var(--accent); outline-offset:2px;}
-  @media (prefers-reduced-motion: reduce){ *{animation-duration:0.001ms !important; transition-duration:0.001ms !important;} }
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:0.001ms !important; transition-duration:0.001ms !important;}
+  }
 
   .btn{
-    font-family:var(--font-ui); font-weight:600; font-size:13px;
-    padding:9px 14px; border-radius:6px;
-    border:1.5px solid var(--ink); background:var(--ink); color:var(--paper);
+    font-family:var(--font-ui); font-weight:600; font-size:13.5px;
+    padding:10px 16px; border-radius:3px;
+    border:1px solid var(--accent); background:var(--accent); color:#FBF6EE;
   }
-  .btn.secondary{background:transparent; color:var(--ink);}
-  /* .btn.secondary/.panel specificity note: "Show zoning envelope"/"Show major streets" carry
-     class="btn secondary panel", intending the .panel rule's solid background:var(--card) to
-     give them the same card look as every other toolbar button. But .btn.secondary (two chained
-     classes = specificity 0,2,0) always beats .panel (one class = 0,1,0), regardless of source
-     order, so background:transparent silently wins in the default/off state. Their ACTIVE
-     (toggled-on) state doesn't show this — .btn.active is ALSO 0,2,0, and since it's declared
-     later in this file, the same-specificity tiebreak goes to source order, which favors
-     .active. Only the default/off state needs the override below. Scoped to the exact
-     three-class combination so it doesn't change any other
-     .btn.secondary element that isn't also .panel. */
-  .btn.secondary.panel{background:var(--card);}
+  .btn.secondary{background:transparent; color:var(--ink); border-color:var(--line);}
   .btn.ghost{background:transparent; border-color:transparent; color:var(--ink-soft); padding:6px 8px;}
-  .btn:disabled{opacity:0.45; cursor:not-allowed;}
-  .btn.active{background:var(--accent); border-color:var(--accent); color:#fff;}
-  /* the .btn.secondary.panel fix above raised specificity to 0,3,0, which would otherwise beat
-     .btn.active's 0,2,0 and silently break the toggled-ON look for these same two buttons —
-     this brings active back on top for that exact combination. */
-  .btn.secondary.panel.active{background:var(--accent); border-color:var(--accent); color:#fff;}
-
-  #canvasWrap{position:fixed; inset:0;}
-  canvas{display:block; width:100%; height:100%;}
-
-  /* Small-screen gate — hidden by default, shown (and everything else hidden) only via
-     body.gate-small, which JS sets/clears based on the viewport's SHORTER dimension so a phone
-     rotated to landscape doesn't slip through (width alone would pass a landscape phone). */
-  #smallScreenGate{
-    display:none; position:fixed; inset:0; z-index:200;
-    background:var(--paper); color:var(--ink);
-    flex-direction:column; align-items:center; justify-content:center;
-    text-align:center; padding:40px 32px;
-  }
-  body.gate-small #smallScreenGate{display:flex;}
-  body.gate-small #canvasWrap, body.gate-small header.top{display:none;}
-  .gateIcon{width:96px; height:72px; margin-bottom:28px;}
-  .gateHr{width:64px; height:1px; background:var(--line); margin:22px 0;}
-  .gateTitle{
-    font-family:var(--font-display); font-size:28px; letter-spacing:0.14em;
-    text-transform:uppercase; margin:0; font-weight:600;
-  }
-  .gateBody{
-    font-family:var(--font-ui); font-size:15px; line-height:1.65; color:var(--ink-soft);
-    max-width:360px; margin:0;
-  }
-  .gateFooter{font-family:var(--font-ui); font-size:12px; letter-spacing:0.08em; color:var(--ink-soft);}
-  .gateFooter a{color:var(--ink-soft); text-decoration:underline;}
+  .btn:hover{opacity:0.92;}
+  .btn:disabled{opacity:0.5; cursor:not-allowed;}
 
   header.top{
-    position:fixed; top:0; left:0; right:0; z-index:20;
-    padding:calc(14px + env(safe-area-inset-top)) 16px 12px;
-    display:flex; flex-direction:column; gap:10px;
-    background:linear-gradient(to bottom, rgba(237,234,224,0.94), rgba(237,234,224,0.7) 70%, transparent);
-    pointer-events:none;
+    padding:calc(24px + env(safe-area-inset-top)) 20px 16px;
+    position:relative;
+    border-bottom:1px solid var(--line);
   }
-  :root[data-theme="dark"] header.top{background:linear-gradient(to bottom, rgba(20,23,27,0.94), rgba(20,23,27,0.7) 70%, transparent);}
-  header.top > *{pointer-events:none;}
-  header.top button, header.top .panel, header.top .searchWrap{pointer-events:auto;}
-  .headerRow{display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
-  .headerRow:first-child{justify-content:space-between;}
-  .toolbarRow{gap:10px;}
-  .headerActions{display:flex; align-items:center; gap:8px;}
-  h1{font-family:var(--font-display); font-size:19px; margin:0; letter-spacing:0.01em;}
-  .subtitle{font-family:var(--font-ui); font-size:11px; letter-spacing:0.07em; color:var(--ink-soft); text-transform:uppercase; margin-left:2px;}
-
-  .panel{
-    background:var(--card); border:1.5px solid var(--line); border-radius:8px;
-    box-shadow:var(--shadow); padding:10px 12px;
+  header.top .inner{ max-width:1400px; margin:0 auto; }
+  header.top h1{
+    font-family:var(--font-display); font-weight:600; margin:0 0 8px;
+    font-size:clamp(28px, 4vw, 40px); letter-spacing:-0.01em;
   }
-  .panel-title{font-family:var(--font-ui); font-size:11px; letter-spacing:0.07em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 8px;}
-  .segmented{display:flex; gap:2px; padding:2px; background:var(--paper-deep); border-radius:7px;}
-  .segmented button{
-    border:none; background:transparent; color:var(--ink-soft); font-size:12px; font-weight:600;
-    padding:6px 10px; border-radius:5px;
+  header.top .tagline{
+    font-family:var(--font-ui); font-size:12px; letter-spacing:0.08em;
+    color:var(--ink-soft); margin:0; text-transform:uppercase;
   }
-  .segmented button.active{background:var(--card); color:var(--ink); box-shadow:var(--shadow);}
-
-  /* Neighborhood search — a text input + dropdown next to the borough tabs, not a .segmented
-     control like borough/color-mode, since the option set here is ~260 items, not a fixed few */
-  .searchWrap{
-    position:relative; display:flex; align-items:center;
-    background:var(--card); border:1.5px solid var(--line); border-radius:8px; box-shadow:var(--shadow);
-  }
-  .searchInput{
-    font-family:var(--font-ui); font-size:12px; font-weight:600; color:var(--ink);
-    background:transparent; border:none; outline:none; padding:9px 10px; width:170px;
-  }
-  .searchInput::placeholder{color:var(--ink-soft); font-weight:600;}
-  .searchClear{background:transparent; border:none; color:var(--ink-soft); font-weight:700; font-size:15px; line-height:1; padding:0 10px 0 0; cursor:pointer;}
-  .searchClear.hidden{display:none;}
-  .searchResults{
-    position:absolute; top:calc(100% + 6px); left:0; min-width:240px; max-height:280px; overflow-y:auto;
-    background:var(--card); border:1.5px solid var(--line); border-radius:8px; box-shadow:var(--shadow);
-    z-index:30; padding:4px;
-  }
-  .searchResults.hidden{display:none;}
-  .searchResults button{
-    display:block; width:100%; text-align:left; background:transparent; border:none; border-radius:5px;
-    padding:8px 10px; font-family:var(--font-ui); font-size:12px; color:var(--ink); font-weight:600; cursor:pointer;
-  }
-  .searchResults button:hover, .searchResults button:focus-visible{background:var(--paper-deep);}
-  .searchResults .ntaBoro{color:var(--ink-soft); font-weight:500; margin-left:6px; font-size:11px;}
-  .searchResults .noResults{color:var(--ink-soft); font-weight:500; padding:8px 10px; font-size:12px; cursor:default;}
-  .searchResults .ntaGroupHeader{
-    font-size:10px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase;
-    color:var(--ink-soft); padding:8px 10px 4px; margin-top:2px;
-  }
-  .searchResults .ntaGroupHeader:first-child{margin-top:0;}
-
-  .iconBtn{
-    width:34px; height:34px; padding:0; border-radius:50%;
-    background:var(--card); border:1.5px solid var(--line); color:var(--ink);
-    font-family:var(--font-ui); font-weight:700; font-size:15px;
-    display:flex; align-items:center; justify-content:center;
-  }
-
-  /* Legend and nav controls share one flex column so they stack without ever overlapping —
-     replaces an earlier version where each was independently `position:fixed` with a
-     hand-guessed pixel offset to avoid colliding with the other, which broke whenever the
-     legend's real height didn't match the guess. */
-  #rightRail{
-    position:fixed; top:calc(70px + env(safe-area-inset-top)); right:16px; z-index:20;
-    display:flex; flex-direction:column; gap:10px; align-items:stretch;
-    width:250px; max-height:calc(100vh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
-  }
-  /* Note: CSS has no // line comments, only /* ... * / block comments — a // comment here once
-     silently corrupted the parser and dropped most of the rules that followed it (.swatch,
-     .legendCheck, #navPanel, etc.). Keep this block-comment only. */
-  #sidePanel{overflow-y:auto; flex:0 1 auto; min-height:0;}
-  #sidePanel .legend-item{display:flex; align-items:center; gap:8px; padding:5px 2px; font-family:var(--font-ui); font-size:12.5px; border:none; background:none; width:100%; text-align:left; color:var(--ink);}
-  .legend-item.off{opacity:0.55;}
-  .legendCheck{
-    width:13px; height:13px; flex:none; border-radius:3px;
-    border:1.5px solid var(--ink-soft); position:relative;
-  }
-  .legend-item:not(.off) .legendCheck{background:var(--ink); border-color:var(--ink);}
-  .legend-item:not(.off) .legendCheck::after{
-    content:''; position:absolute; left:3px; top:0px; width:4px; height:8px;
-    border:solid var(--paper); border-width:0 1.5px 1.5px 0; transform:rotate(45deg);
-  }
-  .legendActions{display:flex; justify-content:flex-end; margin-bottom:2px;}
-  .legendLink{
-    background:none; border:none; padding:2px 0; font-family:var(--font-ui); font-size:11px;
-    font-weight:600; color:var(--accent); text-decoration:underline; text-underline-offset:2px;
-  }
-  .legendNote{
-    font-family:var(--font-ui); font-size:11px; color:var(--ink-soft); line-height:1.5;
-    margin-top:8px; padding-top:8px; border-top:1px solid var(--line);
-  }
-  .swatch{width:12px; height:12px; border-radius:3px; flex:none;}
-
-  #navPanel{flex:none;}
-  .navPanelRow{display:flex; align-items:center; justify-content:space-between; gap:10px;}
-  .navPanelDivider{height:1px; background:var(--line); margin:10px 0;}
-  .navPanelToggleRow{display:flex; gap:6px;}
-  .navPanelToggleRow .navBtn{flex:1; text-align:center;}
-
-  #statusBar{
-    position:fixed; bottom:calc(14px + env(safe-area-inset-bottom)); left:16px; z-index:20;
-    font-family:var(--font-mono); font-size:11px; color:var(--ink-soft);
-    background:var(--card); border:1.5px solid var(--line); border-radius:6px; padding:6px 10px;
-  }
-
-  #compassDial{
-    width:52px; height:52px; padding:0; border-radius:50%; flex:none;
-    background:var(--paper-deep); border:1.5px solid var(--line);
-    display:flex; align-items:center; justify-content:center;
-  }
-  #compassDial:active{background:var(--line);}
-  #compassSvg{width:38px; height:38px;}
-  .compassRing{fill:none; stroke:var(--line); stroke-width:1;}
-  .compassN{fill:var(--warn);}
-  .compassS{fill:var(--ink-soft); opacity:0.5;}
-  .compassLabel{font-family:var(--font-ui); font-size:7px; font-weight:700; fill:var(--ink-soft);}
-  #compassNeedle{transform-origin:20px 20px; transition:none;}
-  .navBtn{
-    font-family:var(--font-ui); font-weight:600; font-size:11.5px;
-    background:var(--paper-deep); color:var(--ink); border:none;
-    border-radius:16px; padding:7px 12px; box-shadow:var(--shadow); white-space:nowrap;
-  }
-  .navBtn.round{width:32px; height:32px; padding:0; border-radius:50%; font-size:16px; line-height:1;}
-  .navBtn.active{background:var(--ink); color:var(--paper);}
-  .zoomCluster{display:flex; flex-direction:column; gap:4px; background:var(--card); border:1.5px solid var(--line); border-radius:20px; padding:4px; box-shadow:var(--shadow);}
-  .zoomCluster .navBtn{border:none; box-shadow:none; background:transparent;}
-
-  #inspectPanel{
-    position:fixed; bottom:calc(14px + env(safe-area-inset-bottom)); right:16px; z-index:25;
-    width:260px; display:none;
-  }
-  #inspectPanel h3{font-family:var(--font-display); font-size:16px; margin:0 0 6px;}
-  #inspectPanel .row{display:flex; justify-content:space-between; font-family:var(--font-ui); font-size:12px; padding:2px 0; border-bottom:1px solid var(--line);}
-  #inspectPanel .row span:first-child{color:var(--ink-soft);}
-  #inspectPanel .far-bar{height:6px; border-radius:3px; background:var(--paper-deep); margin:8px 0 2px; overflow:hidden;}
-  #inspectPanel .far-bar-fill{height:100%; background:var(--accent);}
-
   .theme-toggle{
-    width:38px; height:38px; display:flex; align-items:center; justify-content:center;
-    border-radius:50%; border:1.5px solid var(--line); background:var(--card); color:var(--ink);
-    font-size:16px; padding:0;
+    position:absolute; top:calc(20px + env(safe-area-inset-top)); right:20px;
+    width:40px; height:40px;
+    display:flex; align-items:center; justify-content:center;
+    border-radius:50%; border:1px solid var(--line);
+    background:var(--card); color:var(--ink); font-size:16px; padding:0;
+  }
+  main{max-width:1400px; margin:0 auto; padding:24px 20px calc(40px + env(safe-area-inset-bottom));}
+  footer.foot{
+    text-align:center;
+    padding:18px 12px calc(30px + env(safe-area-inset-bottom));
+    font-family:var(--font-ui); font-size:11px; letter-spacing:0.06em;
+    color:var(--ink-soft); opacity:0.8;
   }
 
+  /* ---- Toast ---- */
   .toast{
     position:fixed; bottom:calc(22px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%);
-    background:var(--ink); color:var(--paper); font-family:var(--font-ui); font-size:13.5px; font-weight:600;
-    padding:12px 20px; border-radius:8px; box-shadow:var(--shadow);
-    opacity:0; pointer-events:none; transition:opacity 0.25s ease; z-index:60; max-width:90vw; text-align:center;
+    background:var(--ink); color:var(--paper);
+    font-family:var(--font-ui); font-size:13.5px; font-weight:600;
+    padding:12px 20px; border-radius:6px; box-shadow:var(--shadow);
+    opacity:0; pointer-events:none; transition:opacity 0.25s ease;
+    z-index:50;
   }
   .toast.show{opacity:1;}
 
-  #loadOverlay{
-    position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
-    background:var(--paper); flex-direction:column; gap:10px;
+  /* ---- Confirm modal ---- */
+  .confirm-overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,0.55);
+    display:flex; align-items:center; justify-content:center;
+    padding:20px; z-index:60;
   }
-  #loadOverlay.hidden{display:none;}
-  #loadOverlay .spin{width:28px; height:28px; border-radius:50%; border:3px solid var(--line); border-top-color:var(--accent); animation:spin 0.9s linear infinite;}
-  @keyframes spin{to{transform:rotate(360deg);}}
-  #loadOverlay p{font-family:var(--font-ui); font-size:13px; color:var(--ink-soft);}
-
-  .confirm-overlay{position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; padding:20px; z-index:60;}
-  .confirm-box{background:var(--card); border-radius:8px; box-shadow:var(--shadow); padding:22px; max-width:360px; width:100%;}
-  #helpOverlay.hidden{display:none;}
-  .helpBox{max-width:440px; max-height:calc(100vh - 80px); overflow-y:auto;}
-  .helpHeader{display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;}
-  .helpHeader h3{font-family:var(--font-display); font-size:19px; margin:0;}
-  .helpSection{margin-top:16px;}
-  .helpSection:first-of-type{margin-top:14px;}
-  .helpLabel{font-family:var(--font-ui); font-size:11px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase; color:var(--accent); margin-bottom:5px;}
-  .helpSection p{font-family:var(--font-body); font-size:13.5px; line-height:1.5; color:var(--ink); margin:0 0 6px;}
-  .helpSection p:last-child{margin-bottom:0;}
-  .confirm-box p{font-family:var(--font-body); font-size:15.5px; color:var(--ink); margin:0 0 20px; line-height:1.5;}
+  .confirm-box{
+    background:var(--card); border-radius:6px; box-shadow:var(--shadow);
+    padding:22px; max-width:360px; width:100%; border:1px solid var(--line);
+  }
+  .confirm-box p{
+    font-family:var(--font-body); font-size:15px; color:var(--ink);
+    margin:0 0 20px; line-height:1.5;
+  }
   .confirm-actions{display:flex; gap:10px; justify-content:flex-end;}
 
-  footer.foot{
-    position:fixed; bottom:0; left:0; right:0; z-index:5;
-    text-align:center; padding:4px 12px calc(6px + env(safe-area-inset-bottom));
-    font-family:var(--font-ui); font-size:10px; letter-spacing:0.06em; color:var(--ink-soft); opacity:0.7;
-    pointer-events:none;
-  }
+  /* ---- Palette & Plan — tool-specific UI ---- */
+  .intro{ max-width:60ch; color:var(--ink-soft); font-size:15px; line-height:1.55; margin:0 0 22px; }
+  .group-label{ font-family:var(--font-ui); font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 8px; }
 
-  @media (max-width: 640px){
-    #rightRail{width:200px;}
-    #inspectPanel{width:200px;}
-    .helpBox{max-width:calc(100vw - 40px);}
+  .palette-tabs{ display:flex; gap:28px; margin-bottom:24px; border-bottom:1px solid var(--line); }
+  .palette-tabs button{
+    background:none; border:none; font-family:var(--font-display); font-style:italic;
+    font-size:17px; color:var(--ink-soft); padding:0 0 12px; cursor:pointer;
+    border-bottom:2px solid transparent; transition:color 0.15s ease, border-color 0.15s ease;
   }
+  .palette-tabs button.active{ color:var(--ink); border-bottom-color:var(--accent); }
+  .palette-tabs button:hover{ color:var(--ink); }
+
+  .layout{ display:grid; grid-template-columns:1.6fr 1fr; gap:28px; align-items:start; }
+  @media (max-width:860px){ .layout{ grid-template-columns:1fr; } }
+
+  .plan-card{ background:var(--plan-canvas); border-radius:4px; padding:20px; position:sticky; top:24px; }
+  .plan-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .plan-head .group-label{ color:var(--plan-line); opacity:0.85; }
+  .plan-head .btn.ghost{ color:var(--plan-line); font-size:12.5px; padding:4px 8px; }
+  .plan-head .btn.ghost:hover{ opacity:0.75; }
+  @media (max-width:860px){ .plan-card{ position:static; } }
+  .plan-card svg{ width:100%; height:auto; display:block; touch-action:none; }
+
+  .plan-caption{
+    display:flex; justify-content:space-between; align-items:baseline; margin-top:14px;
+    padding-top:12px; border-top:1px solid var(--plan-line-soft); color:var(--plan-line); font-size:12.5px;
+  }
+  .plan-caption span:first-child{ font-family:var(--font-display); font-style:italic; }
+
+  .panel{ display:flex; flex-direction:column; gap:10px; }
+  .cat-card{ background:var(--card); border:1px solid var(--line); border-radius:3px; padding:16px 18px; }
+  .cat-card.unplaced .cat-head .price{ color:var(--ink-soft); font-style:italic; font-weight:400; }
+  .cat-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; }
+  .cat-head h3{ font-family:var(--font-display); font-weight:600; font-size:16.5px; margin:0; }
+  .cat-head .price{ font-size:14.5px; font-weight:500; color:var(--accent); font-variant-numeric:tabular-nums; }
+
+  .swatch-row{ display:grid; grid-template-columns:repeat(2, 1fr); gap:10px; }
+  .swatch{
+    display:flex; align-items:center; gap:10px; padding:11px 12px;
+    border:1px solid var(--line); border-radius:3px; background:transparent; cursor:pointer;
+    text-align:left; font-family:var(--font-ui); color:var(--ink);
+    transition:border-color 0.15s ease, background 0.15s ease;
+  }
+  .swatch:hover{ border-color:var(--ink-soft); }
+  .swatch.selected{ border-color:var(--accent); background:var(--accent-soft); }
+  .swatch-chip{ width:24px; height:24px; border-radius:2px; flex-shrink:0; border:1px solid var(--line); }
+  .swatch-label{ display:flex; flex:1; justify-content:space-between; align-items:baseline; gap:8px; min-width:0; }
+  .swatch-label .name{ font-size:14.5px; font-weight:600; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  .swatch-label .price{ font-size:13px; font-weight:500; color:var(--ink-soft); flex-shrink:0; white-space:nowrap; }
+
+  .summary{ background:var(--card); border:1px solid var(--line); border-radius:3px; padding:18px 20px; margin-top:6px; }
+  .summary-total{ display:flex; justify-content:space-between; align-items:baseline; font-family:var(--font-display); font-size:19px; margin-bottom:14px; }
+  .summary-total .amount{ color:var(--accent); }
+  .btn-row{ display:flex; gap:10px; }
+  .btn-row .btn{ flex:1; }
+  .btn-row-secondary{ display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; }
+  .btn-row-secondary .btn{ flex:1; min-width:120px; }
+
+  .list-out{ margin-top:14px; padding-top:14px; border-top:1px solid var(--line); font-size:13px; color:var(--ink-soft); line-height:1.7; display:none; }
+  .list-out.visible{ display:block; }
+  .list-out .row{ display:flex; justify-content:space-between; }
+  .list-out .row .n{ color:var(--ink); }
+  .list-out .row .dim{ font-style:italic; opacity:0.75; }
 </style>
 </head>
 <body>
 
-<div id="canvasWrap"></div>
-
-<!-- Small-screen gate — the map, toolbar, and Land Use/Navigate side panels don't fit a
-     phone-sized screen. Icon is a little 5-bar skyline built from the real LANDUSE_COLORS
-     values used throughout the app, not arbitrary new colors. -->
-<div id="smallScreenGate">
-  <svg class="gateIcon" viewBox="0 0 96 72" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <rect x="2"  y="30" width="15" height="38" fill="#C8932A"/>
-    <rect x="21" y="12" width="15" height="56" fill="#B23A2E"/>
-    <rect x="40" y="42" width="15" height="26" fill="#746553"/>
-    <rect x="59" y="2"  width="15" height="66" fill="#1F4E79"/>
-    <rect x="78" y="24" width="15" height="44" fill="#8E4529"/>
-  </svg>
-  <div class="gateHr"></div>
-  <h2 class="gateTitle">Massing</h2>
-  <p class="gateBody">This tool renders real NYC building volumes in 3D alongside a toolbar and side panels — it needs a tablet or desktop display for that layout. Please open it on a larger screen.</p>
-  <div class="gateHr"></div>
-  <div class="gateFooter">Joe.K &nbsp;·&nbsp; <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a></div>
-</div>
-
 <header class="top">
-  <div class="headerRow">
-    <div>
-      <h1>MASSING</h1>
-      <div class="subtitle">real NYC building volumes, grown from PLUTO</div>
-    </div>
-    <div class="headerActions">
-      <button class="iconBtn" id="helpBtn" aria-label="Help">?</button>
-      <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode">🌙</button>
-    </div>
+  <div class="inner">
+    <h1>Palette &amp; Plan</h1>
+    <p class="tagline">Drag-and-drop dorm room configurator</p>
   </div>
-  <div class="headerRow toolbarRow">
-    <div class="panel segmented" id="boroughPicker">
-      <button data-boro="1" class="active">MN</button>
-      <button data-boro="2">BX</button>
-      <button data-boro="3">BK</button>
-      <button data-boro="4">QN</button>
-      <button data-boro="5">SI</button>
-    </div>
-    <div class="panel segmented" id="colorModePicker">
-      <button data-mode="landuse" class="active">Land Use</button>
-      <button data-mode="far">FAR Use</button>
-      <button data-mode="year">Year Built</button>
-      <button data-mode="neighborhood">Neighborhood</button>
-    </div>
-    <button class="btn secondary panel" id="envelopeToggle">Show zoning envelope</button>
-    <button class="btn secondary panel" id="streetsToggle">Show major streets</button>
-    <div class="searchWrap" id="neighborhoodWrap">
-      <input type="text" id="neighborhoodSearch" class="searchInput" placeholder="Neighborhood…" autocomplete="off">
-      <button class="searchClear hidden" id="neighborhoodClear" aria-label="Clear neighborhood filter">×</button>
-      <div id="neighborhoodResults" class="searchResults hidden"></div>
-    </div>
-  </div>
+  <button class="theme-toggle" id="themeToggle" aria-label="Toggle midnight mode">🌙</button>
 </header>
 
-<div id="rightRail">
-  <div id="sidePanel" class="panel">
-    <div class="panel-title" id="legendTitle">Land Use</div>
-    <div id="legendList"></div>
-  </div>
+<main id="main"></main>
 
-  <div id="navPanel" class="panel">
-    <div class="panel-title">Navigate</div>
-    <div class="navPanelRow">
-      <button id="compassDial" aria-label="Reset to north-up (click), drag to rotate">
-        <svg viewBox="0 0 40 40" id="compassSvg">
-          <circle cx="20" cy="20" r="18" class="compassRing"/>
-          <g id="compassNeedle">
-            <path d="M20 5 L24 20 L20 17 L16 20 Z" class="compassN"/>
-            <path d="M20 35 L24 20 L20 23 L16 20 Z" class="compassS"/>
-          </g>
-          <text x="20" y="12" class="compassLabel" text-anchor="middle">N</text>
-        </svg>
-      </button>
-      <div class="zoomCluster">
-        <button class="navBtn round" id="zoomInBtn" aria-label="Zoom in">+</button>
-        <button class="navBtn round" id="zoomOutBtn" aria-label="Zoom out">−</button>
-      </div>
-    </div>
-    <div class="navPanelDivider"></div>
-    <div class="navPanelToggleRow">
-      <button class="navBtn" id="recenterBtn" title="Recenter view">⤾ Recenter</button>
-      <button class="navBtn" id="planViewBtn" title="Toggle straight-down plan view">◱ Plan View</button>
-    </div>
-  </div>
+<div id="tooSmallBlock" style="display:none; position:fixed; inset:0; z-index:9999;
+     background:var(--paper); color:var(--ink); flex-direction:column;
+     align-items:center; justify-content:center; text-align:center; padding:32px;">
+  <svg width="72" height="72" viewBox="0 0 72 72" style="margin-bottom:28px;">
+    <rect x="6" y="6" width="60" height="60" fill="none" stroke="var(--plan-line)" stroke-width="2"/>
+    <rect x="16" y="16" width="24" height="16" fill="none" stroke="var(--plan-line)" stroke-width="1.5"/>
+    <rect x="44" y="38" width="14" height="18" fill="var(--accent)" opacity="0.55"/>
+  </svg>
+  <div style="width:60px; height:1px; background:var(--line); margin-bottom:24px;"></div>
+  <h1 style="font-family:var(--font-display); font-weight:600; letter-spacing:0.02em; margin:0 0 20px; font-size:22px;">Palette &amp; Plan</h1>
+  <p style="font-family:var(--font-body); color:var(--ink-soft); max-width:380px; line-height:1.6; margin:0 0 24px; font-size:14.5px;">
+    This tool needs a tablet or desktop screen — dragging furniture into a scaled floor plan doesn't work well on a phone-sized display. Please open it on a larger screen.
+  </p>
+  <div style="width:60px; height:1px; background:var(--line); margin-bottom:24px;"></div>
+  <p style="font-family:var(--font-ui); font-size:12px; letter-spacing:0.06em; color:var(--ink-soft);">
+    Joe.K · axisbim.io
+  </p>
 </div>
-
-<div id="statusBar">loading…</div>
-
-<div id="helpOverlay" class="confirm-overlay hidden">
-  <div class="confirm-box helpBox">
-    <div class="helpHeader">
-      <h3>How to use MASSING</h3>
-      <button class="iconBtn" id="helpCloseBtn" aria-label="Close help">×</button>
-    </div>
-    <div class="helpSection">
-      <div class="helpLabel">Navigating</div>
-      <p>Drag to rotate. Right-click drag (or two-finger drag) to pan. Scroll or pinch to zoom.</p>
-      <p>The compass shows which way you're facing — click it to snap back to north-up. <b>Recenter</b> returns to the default view. <b>Plan View</b> switches to a straight-down, north-up reading of the massing.</p>
-    </div>
-    <div class="helpSection">
-      <div class="helpLabel">Reading a building</div>
-      <p>Click any building for its real PLUTO record — address, BBL, land use, year built, recorded height and floor count, lot area, and how much of its allowed zoning capacity is actually built.</p>
-    </div>
-    <div class="helpSection">
-      <div class="helpLabel">Color modes</div>
-      <p><b>Land Use</b> — the lot's recorded use category. <b>FAR Use</b> — how built-out a lot is relative to what zoning allows there. <b>Year Built</b> — construction era. <b>Neighborhood</b> — colored by real NYC Neighborhood Tabulation Area boundaries; switching to this mode the first time loads the full neighborhood geometry, which can take a few seconds.</p>
-      <p>Click any item in the legend to hide that category from the view — click again to bring it back. "Show all" / "Hide all" toggles everything at once.</p>
-    </div>
-    <div class="helpSection">
-      <div class="helpLabel">Zoning envelope</div>
-      <p>The translucent volume above a building is its unbuilt allowed capacity — real lot area × the greatest of its residential, commercial, or community-facility FAR, compared against what's actually built there.</p>
-    </div>
-    <div class="helpSection">
-      <div class="helpLabel">Major streets</div>
-      <p>Toggle avenue-width-and-up streets on for orientation — useful for placing yourself relative to real cross streets while rotated or zoomed in close.</p>
-    </div>
-    <div class="helpSection">
-      <div class="helpLabel">Finding a neighborhood</div>
-      <p>Use the neighborhood search box to jump straight to a named area (e.g. Hell's Kitchen) instead of browsing its whole borough — every real lot in that neighborhood loads, with no 15,000-lot cap. Clear the search to return to borough view.</p>
-    </div>
-    <div class="helpSection">
-      <div class="helpLabel">About the data</div>
-      <p>Real NYC PLUTO tax lot records and Building Footprints, from NYC Open Data — one volume per real lot, not a model. Boroughs load one at a time, capped at 15,000 lots each for performance; a searched neighborhood loads in full, uncapped.</p>
-    </div>
-  </div>
-</div>
-
-<div id="inspectPanel" class="panel">
-  <h3 id="inspectAddr">—</h3>
-  <div class="row"><span>BBL</span><span id="inspectBBL">—</span></div>
-  <div class="row"><span>Land use</span><span id="inspectLandUse">—</span></div>
-  <div class="row"><span>Built</span><span id="inspectYear">—</span></div>
-  <div class="row"><span>Height (real)</span><span id="inspectHeight">—</span></div>
-  <div class="row"><span>Floors</span><span id="inspectFloors">—</span></div>
-  <div class="row"><span>Lot area</span><span id="inspectLotArea">—</span></div>
-  <div class="row"><span>Built FAR</span><span id="inspectBuiltFar">—</span></div>
-  <div class="row"><span>Max FAR (allowed)</span><span id="inspectMaxFar">—</span></div>
-  <div class="far-bar"><div class="far-bar-fill" id="farBarFill" style="width:0%"></div></div>
-  <div style="font-family:var(--font-ui); font-size:10.5px; color:var(--ink-soft); text-align:right;">FAR used vs. allowed</div>
-</div>
-
-<div id="loadOverlay"><div class="spin"></div><p id="loadMsg">Fetching Manhattan tax lots…</p></div>
 
 <footer class="foot" id="footVersion"></footer>
 <div class="toast" id="toast"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.7.9'; // keep in sync with the header changelog block and the footer tag below
+const main = document.getElementById('main');
+const APP_VERSION = '1.9.0'; // keep in sync with CHANGELOG.md's top entry and the footer tag below
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -518,11 +252,12 @@ function toast(msg){
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>el.classList.remove('show'), 2800);
+  toastTimer = setTimeout(()=>el.classList.remove('show'), 2600);
 }
 
-/* ================= Confirm dialog (replaces native confirm()) ================= */
-function confirmDialog(message, confirmLabel = 'Clear'){
+/* Confirm dialog — replaces native confirm(), which iOS silently no-ops for
+   home-screen-installed apps. Used by resetRoom(). */
+function confirmDialog(message, confirmLabel = 'Confirm'){
   return new Promise(resolve=>{
     const overlay = document.createElement('div');
     overlay.className = 'confirm-overlay';
@@ -531,7 +266,7 @@ function confirmDialog(message, confirmLabel = 'Clear'){
         <p>${escapeHtml(message)}</p>
         <div class="confirm-actions">
           <button class="btn secondary" id="confirmCancel">Cancel</button>
-          <button class="btn" id="confirmOk" style="background:var(--accent); border-color:var(--accent);">${escapeHtml(confirmLabel)}</button>
+          <button class="btn" id="confirmOk">${escapeHtml(confirmLabel)}</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
@@ -548,1965 +283,825 @@ function escapeHtml(s){
 }
 function escapeAttr(s){ return escapeHtml(s); }
 
-// mulberry32 seeded PRNG — per-BBL deterministic variation
-function mulberry32(seed){
-  return function(){
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+/* View router — single screen today */
+let view = 'home';
+function setView(v){
+  view = v;
+  render();
+  window.scrollTo(0, 0);
 }
-function seedFromBBL(bbl){
-  let h = 0;
-  for(let i=0;i<bbl.length;i++){ h = (Math.imul(h,31) + bbl.charCodeAt(i))|0; }
-  return h;
+function render(){
+  if(view === 'home') return renderHome();
 }
 
-/* ================= fetchWithTimeout — every live geo fetch goes through this ================= */
-async function fetchWithTimeout(url, {timeoutMs=15000, retries=3} = {}){
-  let lastErr;
-  for(let attempt=0; attempt<retries; attempt++){
-    const controller = new AbortController();
-    const timer = setTimeout(()=>controller.abort(), timeoutMs);
-    try{
-      const res = await fetch(url, {signal: controller.signal});
-      clearTimeout(timer);
-      if(!res.ok){
-        const err = new Error(`HTTP ${res.status}`);
-        err.status = res.status;
-        throw err;
-      }
-      return await res.json();
-    }catch(err){
-      clearTimeout(timer);
-      lastErr = err;
-      // A definitive client-error status won't fix itself on retry — most notably 403,
-      // which Socrata returns for requests with no real page origin (e.g. Origin: null
-      // from a file:// page). Fail fast instead of burning the retry budget on it.
-      if(err.status === 403 || err.status === 401) break;
-    }
+/* ================= Room / furniture model ================= */
+const SCALE = 40, MARGIN = 40;
+
+// Wall openings are given as feet measured along that wall, from the (0,0) corner.
+const roomPlans = [
+  {
+    id: 'nyu', label: 'NYU', w: 9, d: 12,
+    door: { wall: 'south', from: 3.5, to: 5.5 },
+    window: { wall: 'north', from: 1, to: 4 },
+    closet: { x: 7.5, y: 0, w: 1.5, d: 2 }
+  },
+  {
+    id: 'green-university', label: 'Green University', w: 11, d: 10,
+    door: { wall: 'south', from: 4.5, to: 6.5 },
+    window: { wall: 'east', from: 2, to: 5 },
+    closet: { x: 0, y: 0, w: 1.5, d: 2 }
   }
-  throw lastErr;
-}
-
-/* ================= Data sources =================
-   MapPLUTO (f888-ni5f): PLUTO attributes + lot polygon geometry, joined on bbl.
-   Building Footprints (5zhs-2jue): real building outline + real roof height, joined on a
-   canonicalized BBL.
-
-   Field/resource notes (differ from the published data dictionary in a few real ways):
-   (1) f888-ni5f (MapPLUTO) is a Socrata "non-tabular" Map asset — /resource/{id}.json
-       rejects it with a 403 and "no row or column access to non-tabular tables", from ANY
-       origin. Not a CORS/origin issue. Use 64uk-42ks, the plain tabular PLUTO resource
-       instead — it carries no geometry (no lot polygon), a real capability loss handled below
-       with a synthetic lat/lon + lotarea footprint for vacant lots.
-   (2) Socrata's API field names are generated from each column's *display title*, not its
-       shapefile attribute abbreviation — so heightroof/groundelev/cnstrct_yr/feat_code/
-       mpluto_bbl (all from the published data dictionary) don't exist on the live resource.
-       Real field names: height_roof, ground_elevation, construction_year, feature_code,
-       mappluto_bbl.
-   (3) BBL comes back in a different literal format from each resource — PLUTO's bbl is a
-       SODA number type serialized as "1018150114.00000000"; Building Footprints' mappluto_bbl
-       is a clean text "1018150114". A direct string-equality join silently matches nothing.
-       canonBBL() below normalizes both before every join lookup. */
-const SOCRATA_BASE = 'https://data.cityofnewyork.us/resource/';
-const PLUTO_RESOURCE = '64uk-42ks';   // tabular PLUTO attributes — NO geometry (see note above)
-const FOOTPRINT_RESOURCE = '5zhs-2jue';
-const MAX_LOTS_PER_BOROUGH = 15000; // perf guard — raise once real-world frame time is verified
-const BORO_CODE_TO_LETTER = {1:'MN', 2:'BX', 3:'BK', 4:'QN', 5:'SI'};
-const CACHE_VERSION = 'v2';
-
-// The four citywide static layers (borough outlines, major streets, NTA name list, full NTA
-// geometries) are cached in localStorage separately from the per-borough PLUTO/footprint cache
-// above — the NTA geometry fetch alone is a ~5s/4.5MB cost, and this data changes essentially
-// never between deploys. Versioned separately from CACHE_VERSION since these are a different
-// data shape with no reason to invalidate together. Same fail-soft posture as saveToCache: caching is a
-// nice-to-have, so a quota-exceeded write is swallowed, not surfaced as an error.
-const STATIC_CACHE_VERSION = 's1';
-function staticCacheKey(name){ return `massing_static_${STATIC_CACHE_VERSION}_${name}`; }
-function loadFromStaticCache(name){
-  try{
-    const raw = localStorage.getItem(staticCacheKey(name));
-    if(!raw) return null;
-    return JSON.parse(raw);
-  }catch(e){ return null; }
-}
-function saveToStaticCache(name, data){
-  try{ localStorage.setItem(staticCacheKey(name), JSON.stringify(data)); }
-  catch(e){ /* quota exceeded — fine, just skip caching this layer */ }
-}
-
-// Both PLUTO's bbl (SODA number, serializes as "1018150114.00000000") and Building Footprints'
-// mappluto_bbl (SODA text, "1018150114") need this before any join comparison or lookup key.
-function canonBBL(bbl){ return String(Math.round(parseFloat(bbl))); }
-
-const PLUTO_FIELDS = ['bbl','borough','block','lot','address','zipcode','landuse','bldgclass',
-  'lotarea','bldgarea','comarea','resarea','numbldgs','numfloors','unitsres','unitstotal',
-  'yearbuilt','zonedist1','overlay1','spdist1','builtfar','residfar','commfar','facilfar',
-  'latitude','longitude','lotfront','lotdepth'];
-const FOOTPRINT_FIELDS = ['mappluto_bbl','height_roof','ground_elevation','construction_year','feature_code','the_geom'];
-
-async function fetchPlutoBorough(boroLetter){
-  const select = PLUTO_FIELDS.join(',');
-  const pageSize = 5000;
-  // MAX_LOTS_PER_BOROUGH/pageSize is a FIXED, known-in-advance page count (3), not an
-  // unknown one — the old sequential while loop paid 3 full round-trips back to back for every
-  // large borough (BK/QN routinely hit the cap), even though each offset request is completely
-  // independent of the others. Firing all 3 in parallel turns that into 1 round-trip's worth of
-  // wall-clock time instead of 3. For a borough with fewer real lots than the cap (e.g. SI),
-  // this does fire 1-2 more requests than the old loop would have — but they run alongside the
-  // ones that do have data, at no serial-latency cost, just a bit of extra (parallel) network
-  // load on Socrata's public API.
-  const pageCount = Math.ceil(MAX_LOTS_PER_BOROUGH / pageSize);
-  const pages = await Promise.all(
-    Array.from({length: pageCount}, (_, i) => {
-      const offset = i * pageSize;
-      const url = `${SOCRATA_BASE}${PLUTO_RESOURCE}.json?$select=${select}&$where=borough='${boroLetter}'&$limit=${pageSize}&$offset=${offset}`;
-      return fetchWithTimeout(url);
-    })
-  );
-  const rows = pages.flat();
-  return rows.slice(0, MAX_LOTS_PER_BOROUGH);
-}
-
-async function fetchFootprintsBorough(boroDigit){
-  const select = FOOTPRINT_FIELDS.join(',');
-  const rows = [];
-  let offset = 0;
-  const pageSize = 5000;
-  // footprints has no borough field of its own — filter by the leading digit of mappluto_bbl.
-  // feature_code='2100' restricts to real buildings (excludes garages/canopies/tanks/etc — see
-  // the FEATURE_CODE enum in the Building Footprints metadata).
-  while(true){
-    const url = `${SOCRATA_BASE}${FOOTPRINT_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(`starts_with(mappluto_bbl,'${boroDigit}') AND feature_code='2100'`)}&$limit=${pageSize}&$offset=${offset}`;
-    const page = await fetchWithTimeout(url);
-    rows.push(...page);
-    if(page.length < pageSize || rows.length > MAX_LOTS_PER_BOROUGH * 2) break;
-    offset += pageSize;
-  }
-  return rows;
-}
-
-/* ================= v1.5.0 — named-neighborhood filtering =================
-   MAX_LOTS_PER_BOROUGH (15000) is a small fraction of any real borough's actual lot count
-   (Manhattan alone has 42,544; Queens has 324,559), and the fetch has no $order clause, so the
-   first 15000 rows returned are whatever order Socrata happens to give, not a spatial sample —
-   likely a contiguous BBL range, i.e. entire neighborhoods silently dropped rather than an even
-   city-wide thinning. A named-neighborhood view sidesteps the cap entirely instead of just
-   softening it: a single NTA is small enough that its real lot count is comfortably under
-   15000, so what's fetched is everything, not a slice. Uses NYC DCP's own 2020 Neighborhood
-   Tabulation Areas (9nt8-h7nd), which covers named neighborhoods like "Hell's Kitchen"
-   (nta2020 'MN0402') directly, making a real named-neighborhood picker possible instead of
-   hand-guessed bounding boxes. */
-const NTA_RESOURCE = '9nt8-h7nd';
-const BORONAME_TO_DIGIT = {'Manhattan':1, 'Bronx':2, 'Brooklyn':3, 'Queens':4, 'Staten Island':5};
-let ntaList = []; // [{ntaname, nta2020, boroname}] — loaded once at boot, ~260 rows, cheap
-async function loadNtaList(){
-  const cached = loadFromStaticCache('ntaList');
-  if(cached){ ntaList = cached; return; }
-  try{
-    const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=ntaname,nta2020,boroname&$order=ntaname&$limit=400`;
-    const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
-    ntaList = rows.filter(r => r.ntaname && r.nta2020 && BORONAME_TO_DIGIT[r.boroname]);
-    saveToStaticCache('ntaList', ntaList);
-  }catch(err){
-    // fails soft, same posture as loadBoroughOutlines — the neighborhood search box just
-    // returns no results instead of breaking the borough view that already works
-    console.warn('Neighborhood list failed to load — search box will show no results', err);
-  }
-}
-async function fetchNtaGeometry(nta2020){
-  const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=the_geom&$where=nta2020='${nta2020}'&$limit=1`;
-  const rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
-  return rows[0] && rows[0].the_geom;
-}
-// Unlike the single-neighborhood search (which fetches one NTA's geometry on demand), this
-// color mode needs every visible lot classified against every NTA at once — so it needs all
-// 262 polygons loaded, not just one. That's a real cost (4.5MB, ~5s), not a cheap lookup, so
-// it's loaded lazily on first use of this color mode rather than at boot like loadNtaList()'s
-// tiny name/code list.
-let ntaGeomCache = {}; // nta2020 -> {ntaname, boroname, rings, bbox}
-let ntaGeomLoaded = false;
-async function loadAllNtaGeometries(){
-  if(ntaGeomLoaded) return;
-  let rows = loadFromStaticCache('ntaGeom');
-  if(!rows){
-    const url = `${SOCRATA_BASE}${NTA_RESOURCE}.json?$select=nta2020,ntaname,boroname,the_geom&$limit=400`;
-    rows = await fetchWithTimeout(url, {timeoutMs: 30000, retries: 2});
-    // caches the raw rows, not the derived rings/bbox below — keeps this cache the same shape
-    // as what the network actually returns, and the ring/bbox math is cheap pure JS, not worth
-    // persisting separately from its source data
-    saveToStaticCache('ntaGeom', rows);
-  }
-  for(const row of rows){
-    if(!row.the_geom || !row.nta2020) continue;
-    const rings = allOuterRingsWorld(row.the_geom);
-    if(!rings.length) continue;
-    let minX=Infinity, maxX=-Infinity, minZ=Infinity, maxZ=-Infinity;
-    for(const ring of rings) for(const [x,z] of ring){
-      if(x<minX)minX=x; if(x>maxX)maxX=x; if(z<minZ)minZ=z; if(z>maxZ)maxZ=z;
-    }
-    ntaGeomCache[row.nta2020] = {ntaname: row.ntaname, boroname: row.boroname, rings, bbox:{minX,maxX,minZ,maxZ}};
-  }
-  ntaGeomLoaded = true;
-}
-// Assigns each record's containing neighborhood, memoized onto the record itself (rec.nta2020)
-// so switching color modes back and forth doesn't repeat the point-in-polygon work for the
-// same loaded records — a fresh `records` array (new borough/neighborhood load) has fresh rec
-// objects with no nta2020 property yet, so this recomputes automatically when it should. The
-// bbox check on every candidate before the real pointInRings test is what keeps 15,000 lots ×
-// 262 polygons fast — most candidates get rejected by four number comparisons, not a ring walk.
-function assignNeighborhoods(records){
-  const entries = Object.entries(ntaGeomCache);
-  for(const rec of records){
-    if(rec.nta2020 !== undefined) continue;
-    const lot = rec.lot;
-    if(!lot.latitude || !lot.longitude){ rec.nta2020 = null; continue; }
-    const [x,z] = projectLonLat(Number(lot.longitude), Number(lot.latitude));
-    let found = null;
-    for(const [code, entry] of entries){
-      const b = entry.bbox;
-      if(x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue;
-      if(pointInRings(x, z, entry.rings)){ found = code; break; }
-    }
-    rec.nta2020 = found;
-  }
-}
-// Hashing nta2020 (short codes like 'MN04', 'MN12' that mostly share a borough-prefix) doesn't
-// spread evenly across the hue wheel — neighborhoods cluster into 6-7 repeated colors instead
-// of 262 distinct ones, defeating the point of this mode. Instead, hue is each neighborhood's
-// position in the full sorted code list times the golden angle (137.508°) — still fully
-// deterministic across sessions/reloads (same code list, same sort, same index every time), but
-// golden-angle spacing means consecutive indices land far apart on the hue wheel, so
-// alphabetically-adjacent codes never get visually adjacent colors either.
-let ntaHueIndex = null; // nta2020 -> index in the full sorted code list, built once from ntaList
-function neighborhoodHueIndex(nta2020){
-  if(!ntaHueIndex){
-    if(!ntaList.length) return undefined; // ntaList not loaded yet — caller falls back
-    ntaHueIndex = {};
-    [...ntaList].map(n => n.nta2020).sort().forEach((code,i) => { ntaHueIndex[code] = i; });
-  }
-  return ntaHueIndex[nta2020];
-}
-function colorForNeighborhood(nta2020){
-  if(!nta2020) return 0x9C9587;
-  const c = new THREE.Color();
-  const idx = neighborhoodHueIndex(nta2020);
-  if(idx === undefined){
-    // fallback only if ntaList somehow isn't loaded yet — keeps this deterministic per-code
-    // even in that edge case, just without the guaranteed even spacing
-    let hash = 0;
-    for(let i=0;i<nta2020.length;i++){ hash = (hash*31 + nta2020.charCodeAt(i)) | 0; }
-    c.setHSL((((hash % 360) + 360) % 360)/360, 0.55, 0.5);
-    return c.getHex();
-  }
-  const hue = (idx * 137.508) % 360;
-  c.setHSL(hue/360, 0.55, 0.5);
-  return c.getHex();
-}
-// Same pagination shape as fetchPlutoBorough, plus a lat/lon rectangle pre-filter — the caller
-// still needs to trim the rectangle down to the real polygon with pointInRings afterward.
-async function fetchPlutoInBBox(boroLetter, bbox){
-  const select = PLUTO_FIELDS.join(',');
-  const where = `borough='${boroLetter}' AND latitude between ${bbox.minLat} and ${bbox.maxLat} AND longitude between ${bbox.minLon} and ${bbox.maxLon}`;
-  const rows = [];
-  let offset = 0;
-  const pageSize = 5000;
-  while(rows.length < MAX_LOTS_PER_BOROUGH){
-    const url = `${SOCRATA_BASE}${PLUTO_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(where)}&$limit=${pageSize}&$offset=${offset}`;
-    const page = await fetchWithTimeout(url);
-    rows.push(...page);
-    if(page.length < pageSize) break;
-    offset += pageSize;
-  }
-  return rows.slice(0, MAX_LOTS_PER_BOROUGH);
-}
-// Fetches footprints for exactly the BBLs asked for, instead of a whole borough — sidesteps
-// fetchFootprintsBorough's own MAX_LOTS_PER_BOROUGH*2 cap, which a neighborhood view would
-// otherwise still be exposed to (footprints has no lat/lon of its own to pre-filter by, only
-// mappluto_bbl, so an exact BBL list is the precise equivalent of the bbox filter above).
-async function fetchFootprintsForBBLs(bbls){
-  if(!bbls.length) return [];
-  const select = FOOTPRINT_FIELDS.join(',');
-  const CHUNK = 400; // keeps each request's URL length reasonable
-  const out = [];
-  for(let i=0; i<bbls.length; i+=CHUNK){
-    const inList = bbls.slice(i, i+CHUNK).map(b => `'${b}'`).join(',');
-    const url = `${SOCRATA_BASE}${FOOTPRINT_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(`mappluto_bbl in (${inList}) AND feature_code='2100'`)}&$limit=${CHUNK}`;
-    out.push(...await fetchWithTimeout(url));
-  }
-  return out;
-}
-
-function cacheKey(boroLetter){ return `massing_cache_${CACHE_VERSION}_${boroLetter}`; }
-function loadFromCache(boroLetter){
-  try{
-    const raw = localStorage.getItem(cacheKey(boroLetter));
-    if(!raw) return null;
-    return JSON.parse(raw);
-  }catch(e){ return null; }
-}
-function saveToCache(boroLetter, data){
-  try{ localStorage.setItem(cacheKey(boroLetter), JSON.stringify(data)); }
-  catch(e){ /* quota exceeded — fine, just skip caching */ }
-}
-
-async function loadBoroughData(boroDigit){
-  const boroLetter = BORO_CODE_TO_LETTER[boroDigit];
-  const cached = loadFromCache(boroLetter);
-  if(cached){ toast(`${boroLetter} loaded from cache`); return cached; }
-
-  // fetchFootprintsBorough only needs boroDigit, not the PLUTO result — these two
-  // fetches never depended on each other, they were just written one after another. Running
-  // them in parallel roughly halves the network-bound wait on every borough load (the single
-  // most frequent load path in the app — initial boot and every borough-tab switch go through
-  // this), instead of paying each fetch's full page-loop time back to back.
-  document.getElementById('loadMsg').textContent = `Fetching ${boroLetter} tax lots + building footprints…`;
-  const [plutoRows, footprintRows] = await Promise.all([
-    fetchPlutoBorough(boroLetter),
-    fetchFootprintsBorough(boroDigit)
-  ]);
-
-  document.getElementById('loadMsg').textContent = `Joining ${plutoRows.length} lots to ${footprintRows.length} footprints…`;
-  const footprintsByBBL = {};
-  for(const fp of footprintRows){
-    if(!fp.mappluto_bbl) continue;
-    const key = canonBBL(fp.mappluto_bbl);
-    (footprintsByBBL[key] = footprintsByBBL[key] || []).push(fp);
-  }
-  const records = plutoRows.map(lot=>({ lot, footprints: footprintsByBBL[canonBBL(lot.bbl)] || [] }));
-  saveToCache(boroLetter, records);
-  return records;
-}
-
-/* ================= Borough context outlines (all 5 boroughs, fetched once) =================
-   Fetches with NO $select clause deliberately — a wrong field name in $select throws a hard
-   SODA error (see the MapPLUTO/Building Footprints field-name notes above), so this reads
-   whatever keys actually come back instead of guessing them. If this 403s or errors, it fails
-   soft: context outlines just don't appear, everything else keeps working. */
-const BOROUGH_OUTLINE_RESOURCE = 'gthc-hcne';
-let boroughOutlinesLoaded = false;
-async function loadBoroughOutlines(){
-  try{
-    let rows = loadFromStaticCache('boroughOutlines');
-    if(!rows){
-      const url = `${SOCRATA_BASE}${BOROUGH_OUTLINE_RESOURCE}.json?$limit=10`;
-      rows = await fetchWithTimeout(url, {timeoutMs: 15000, retries: 2});
-      if(Array.isArray(rows) && rows.length) saveToStaticCache('boroughOutlines', rows);
-    }
-    if(!Array.isArray(rows) || !rows.length){ console.warn('Borough outlines: empty response'); return; }
-    const nameKey = Object.keys(rows[0]).find(k => /boro.*name|name.*boro/i.test(k)) ||
-                    Object.keys(rows[0]).find(k => k.toLowerCase() === 'borough');
-    for(const row of rows){
-      const geom = row.the_geom || row.geom || row.multipolygon;
-      if(!geom) continue;
-      const rings = allOuterRingsWorld(geom);
-      const label = nameKey ? row[nameKey] : '';
-      addBoroughOutlineMeshes(rings, label);
-      boroughLandRings.push(...rings);
-    }
-    boroughOutlinesLoaded = true;
-    applyGroundTexture();
-  }catch(err){
-    console.warn('Borough outlines failed to load (context layer only, rest of the app is unaffected):', err);
-  }
-}
-/* ================= v1.6.0 — major streets ================= */
-// NYC Street Centerline (CSCL) — real road-bed geometry, 122,245 segments citywide. Confirmed
-// live before committing to this: filtering to streetwidth >= 60 (roughly avenue-width and up)
-// brings that down to 6,497 segments citywide — comparable in scale to the borough outlines,
-// not a performance risk. Loaded once at boot, citywide, same posture as loadBoroughOutlines —
-// independent of which borough/neighborhood is currently loaded, toggled on/off rather than
-// refetched per switch.
-const STREET_RESOURCE = 'inkn-q76z';
-const STREET_MIN_WIDTH_FT = 60;
-const STREET_RIBBON_WIDTH = 0.3; // world units (~15ft) — a visible line, not the real pavement width
-let streetsLoaded = false;
-async function loadMajorStreets(){
-  try{
-    let rows = loadFromStaticCache('streets');
-    if(!rows){
-      const select = 'the_geom,stname_label,streetwidth';
-      const where = `boroughcode in ('1','2','3','4','5') AND streetwidth >= ${STREET_MIN_WIDTH_FT}`;
-      rows = [];
-      let offset = 0;
-      const pageSize = 5000;
-      while(true){
-        const url = `${SOCRATA_BASE}${STREET_RESOURCE}.json?$select=${select}&$where=${encodeURIComponent(where)}&$limit=${pageSize}&$offset=${offset}`;
-        const page = await fetchWithTimeout(url, {timeoutMs: 20000, retries: 2});
-        rows.push(...page);
-        if(page.length < pageSize) break;
-        offset += pageSize;
-      }
-      saveToStaticCache('streets', rows);
-    }
-    const mat = new THREE.MeshBasicMaterial({color:0x8A8471, transparent:true, opacity:0.5, depthWrite:false, side:THREE.DoubleSide});
-    for(const row of rows){
-      if(!row.the_geom) continue;
-      const parts = allLineStringPartsWorld(row.the_geom);
-      for(const part of parts){
-        if(part.length < 2) continue;
-        const geo = buildPolylineRibbonGeometry(part, STREET_RIBBON_WIDTH);
-        const mesh = new THREE.Mesh(geo, mat);
-        // Sits above the ground plane
-        // (-0.05), below the borough-outline ribbon (0.1), so the two layers don't z-fight
-        // each other where a street crosses a borough boundary
-        mesh.position.y = 0.03;
-        streetGroup.add(mesh);
-      }
-    }
-    streetsLoaded = true;
-  }catch(err){
-    console.warn('Major streets failed to load (context layer only, rest of the app is unaffected):', err);
-  }
-}
-function ringCentroid(ring){
-  // area-weighted polygon centroid (shoelace-based) — a plain point average would pull the
-  // label toward whichever stretch of coastline happens to have the densest sampling, not
-  // toward the visual middle of the shape
-  let cx=0, cz=0, areaSum=0;
-  for(let i=0;i<ring.length;i++){
-    const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
-    const cross = x1*z2 - x2*z1;
-    areaSum += cross;
-    cx += (x1+x2)*cross;
-    cz += (z1+z2)*cross;
-  }
-  areaSum *= 0.5;
-  if(Math.abs(areaSum) < 1e-9){
-    let sx=0, sz=0;
-    ring.forEach(([x,z])=>{ sx+=x; sz+=z; });
-    return [sx/ring.length, sz/ring.length];
-  }
-  return [cx/(6*areaSum), cz/(6*areaSum)];
-}
-// Standard ray-casting point-in-polygon, in the same world [x,z] space everything else in this
-// file already projects into — added for v1.5.0's neighborhood filter, which needs to tell
-// whether a lot sits inside a named neighborhood's actual boundary, not just its bounding box.
-// Only tests outer rings, same simplification allOuterRingsWorld already makes for borough
-// outlines (holes aren't meaningful for an inclusion test at this app's scale).
-function pointInRing(x, z, ring){
-  let inside = false;
-  for(let i=0, j=ring.length-1; i<ring.length; j=i++){
-    const [xi,zi] = ring[i], [xj,zj] = ring[j];
-    const crosses = ((zi>z) !== (zj>z)) && (x < (xj-xi)*(z-zi)/(zj-zi) + xi);
-    if(crosses) inside = !inside;
-  }
-  return inside;
-}
-function pointInRings(x, z, rings){
-  return rings.some(ring => pointInRing(x, z, ring));
-}
-// Raw lon/lat bounding box straight from GeoJSON coordinates, before world projection — used to
-// build the PLUTO $where pre-filter (Socrata can't filter by "inside this polygon", only by
-// simple comparisons, so this narrows the fetch to a rectangle first; pointInRings then trims
-// that rectangle down to the real neighborhood shape once the rows are back).
-function lonLatBBoxOfGeom(geom){
-  let minLon=Infinity, maxLon=-Infinity, minLat=Infinity, maxLat=-Infinity;
-  const visit = (coords, depth) => {
-    if(depth === 0){
-      const [lon,lat] = coords;
-      if(lon<minLon) minLon=lon; if(lon>maxLon) maxLon=lon;
-      if(lat<minLat) minLat=lat; if(lat>maxLat) maxLat=lat;
-    } else {
-      coords.forEach(c => visit(c, depth-1));
-    }
-  };
-  visit(geom.coordinates, geom.type === 'Polygon' ? 2 : 3); // Polygon: [ring][pt][lon,lat]; MultiPolygon: +1 level
-  return {minLon,maxLon,minLat,maxLat};
-}
-const BOROUGH_LABEL_WORLD_HEIGHT = 26; // world units — tuned legible around the default recenter dist=750
-function buildBoroughLabelSprite(text){
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  const fontPx = 64;
-  const fontSpec = `600 ${fontPx}px 'Space Grotesk', sans-serif`; // matches the app's own --font-ui
-  ctx.font = fontSpec;
-  const label = text.toUpperCase();
-  const padX = 28;
-  canvas.width = Math.ceil(ctx.measureText(label).width) + padX*2;
-  canvas.height = Math.round(fontPx * 1.6);
-  ctx.font = fontSpec; // canvas resize resets all context state, font included — must re-set
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
-  ctx.fillStyle = 'rgba(156,145,122,0.85)'; // same tan family as the borough outline stroke (#9C917A)
-  ctx.fillText(label, canvas.width/2, canvas.height/2);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
-  sprite.scale.set(BOROUGH_LABEL_WORLD_HEIGHT * (canvas.width/canvas.height), BOROUGH_LABEL_WORLD_HEIGHT, 1);
-  return sprite;
-}
-const BOROUGH_OUTLINE_WIDTH = 2.5; // world units (~125ft at this scene's ~50ft/unit scale) — a real mesh
-  // width, not a GL linewidth hint, so it renders identically on every platform (see note below)
-function buildRingRibbonGeometry(ring, width){
-  // Builds the outline as an actual triangle-strip band instead of a THREE.Line.
-  // THREE.LineBasicMaterial's `linewidth` is a GL line-width hint that only a handful of
-  // platforms (mostly macOS's OpenGL backend) honor — on ANGLE/Direct3D, which is what most
-  // Windows Chrome installs use, every WebGL line is forced to exactly 1px no matter what
-  // linewidth or opacity is set to; raising opacity alone can't fix that, since the line was
-  // already 1px and opacity was never the bottleneck. A mesh has a real, controllable on-screen
-  // footprint on every platform, so it doesn't depend on that GL feature at all.
-  const half = width / 2;
-  const positions = [];
-  const n = ring.length;
-  for(let i=0;i<n;i++){
-    const [x0,z0] = ring[i];
-    const [x1,z1] = ring[(i+1)%n];
-    const dx = x1-x0, dz = z1-z0;
-    const len = Math.hypot(dx,dz) || 1;
-    const nx = -dz/len*half, nz = dx/len*half;
-    // segment quad (two triangles), offset to either side of the centerline
-    positions.push(
-      x0+nx,0,z0+nz,  x0-nx,0,z0-nz,  x1-nx,0,z1-nz,
-      x0+nx,0,z0+nz,  x1-nx,0,z1-nz,  x1+nx,0,z1+nz
-    );
-    // small square filler at each vertex — segments meet at an angle on real coastline data,
-    // and without a joint filler those outer corners show a visible gap; a plain axis-aligned
-    // square (rather than a proper mitered join) is enough to close it at this outline's scale
-    positions.push(
-      x0-half,0,z0-half,  x0+half,0,z0-half,  x0+half,0,z0+half,
-      x0-half,0,z0-half,  x0+half,0,z0+half,  x0-half,0,z0+half
-    );
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.computeBoundingSphere();
-  return geo;
-}
-// Open-polyline sibling of buildRingRibbonGeometry, for street centerlines — same
-// real-mesh-not-a-GL-line reasoning as the comment above, just without wrapping the last point
-// back to the first, since a street isn't a closed loop. The joint-filler square is skipped at
-// index 0 since there's no incoming segment there to join.
-function buildPolylineRibbonGeometry(points, width){
-  const half = width / 2;
-  const positions = [];
-  const n = points.length;
-  for(let i=0; i<n-1; i++){
-    const [x0,z0] = points[i];
-    const [x1,z1] = points[i+1];
-    const dx = x1-x0, dz = z1-z0;
-    const len = Math.hypot(dx,dz) || 1;
-    const nx = -dz/len*half, nz = dx/len*half;
-    positions.push(
-      x0+nx,0,z0+nz,  x0-nx,0,z0-nz,  x1-nx,0,z1-nz,
-      x0+nx,0,z0+nz,  x1-nx,0,z1-nz,  x1+nx,0,z1+nz
-    );
-    if(i > 0){
-      positions.push(
-        x0-half,0,z0-half,  x0+half,0,z0-half,  x0+half,0,z0+half,
-        x0-half,0,z0-half,  x0+half,0,z0+half,  x0-half,0,z0+half
-      );
-    }
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.computeBoundingSphere();
-  return geo;
-}
-function addBoroughOutlineMeshes(rings, label){
-  // A filled ShapeGeometry wash for the borough outlines doesn't triangulate reliably: real NYC
-  // coastline data, even decimated to ~300 points, can develop NEW self-intersections on
-  // sampling that weren't in the source geometry (several ring parts across every borough,
-  // including Manhattan, self-intersect after decimation even though none do before it). A true
-  // topology-preserving simplifier would fix this properly, but that's real added complexity for
-  // what is a low-value backdrop wash, not the data itself. The ribbon below carries 100% of the
-  // information that matters (the boundary shape) and structurally cannot have this bug class —
-  // each segment is an independent quad, never a single triangulated polygon.
-  for(const ring of rings){
-    // The outline ribbon sits at a small positive y (above the ground plane, not below). With
-    // the ground plane at y=-0.05, an outline below it (e.g. y=-0.3) loses the depth test at
-    // almost every pixel for this app's always-elevated, downward-looking camera — it renders
-    // as a broken, dotted chain rather than a solid line, since only the rare spot where
-    // logarithmicDepthBuffer precision happens to let a triangle win the depth test shows
-    // through. depthWrite:false doesn't help this — the problem is depth TEST outcome, not
-    // depth WRITE. Keeping the outline above the ground makes it unambiguously the nearer
-    // surface, so it renders as a solid line regardless of depth-buffer precision at any distance.
-    const ribbonGeo = buildRingRibbonGeometry(ring, BOROUGH_OUTLINE_WIDTH);
-    const ribbonMesh = new THREE.Mesh(ribbonGeo, new THREE.MeshBasicMaterial({color:0x9C917A, transparent:true, opacity:0.9, depthWrite:false, side:THREE.DoubleSide}));
-    ribbonMesh.position.y = 0.1;
-    contextGroup.add(ribbonMesh);
-  }
-  if(label && rings.length){
-    // place at the largest ring's centroid, not the first ring or an average across all
-    // rings — a borough like the Bronx has several separate island/mainland parts, and
-    // averaging their centroids together can land the label in open water between them
-    const largest = rings.reduce((a,b) => ringArea(b) > ringArea(a) ? b : a, rings[0]);
-    const [cx, cz] = ringCentroid(largest);
-    const sprite = buildBoroughLabelSprite(label);
-    // THREE.Sprite always renders centered on its position — this sprite is 26 world units
-    // tall (BOROUGH_LABEL_WORLD_HEIGHT), so at position.y=3 its bottom edge would sit at
-    // y=3-13=-10, well below the ground plane (ground.position.y=-0.05), clipping part of the
-    // glyphs themselves. Center is set high enough that the bottom edge clears the ground.
-    sprite.position.set(cx, BOROUGH_LABEL_WORLD_HEIGHT / 2 + 2, cz);
-    labelGroup.add(sprite);
-  }
-}
-
-
-// Simple equirectangular projection centered on NYC, in feet, then scaled to world units.
-// Not a true State Plane projection — fine at city scale for a generative-art render.
-const REF_LON = -73.97, REF_LAT = 40.70;
-const FT_PER_DEG_LAT = 364000;
-const FT_PER_DEG_LON = 364000 * Math.cos(REF_LAT * Math.PI/180);
-const FEET_PER_WORLD_UNIT = 50;
-function projectLonLat(lon, lat){
-  const xFt = (lon - REF_LON) * FT_PER_DEG_LON;
-  const zFt = -(lat - REF_LAT) * FT_PER_DEG_LAT;
-  return [xFt / FEET_PER_WORLD_UNIT, zFt / FEET_PER_WORLD_UNIT];
-}
-function ftToWorld(ft){ return ft / FEET_PER_WORLD_UNIT; }
-
-// Extract the outer ring of a GeoJSON Polygon/MultiPolygon's largest part, as world-space [x,z] pairs.
-function outerRingWorld(geom){
-  if(!geom || !geom.coordinates) return null;
-  let rings;
-  if(geom.type === 'Polygon') rings = [geom.coordinates];
-  else if(geom.type === 'MultiPolygon') rings = geom.coordinates;
-  else return null;
-  // pick the polygon part with the most vertices as the "main" part for v1 (multi-part lots are rare)
-  let best = rings[0];
-  for(const part of rings){ if(part[0].length > best[0].length) best = part; }
-  const outer = best[0];
-  return outer.map(([lon,lat]) => projectLonLat(lon, lat));
-}
-
-// Unlike outerRingWorld (which keeps only the largest part — fine for a single building),
-// borough boundaries are real disjoint multi-part geometries (e.g. Queens/Bronx/Staten Island
-// each include small separate islands) — this keeps every part so none silently vanish.
-function allOuterRingsWorld(geom){
-  if(!geom || !geom.coordinates) return [];
-  let rings;
-  if(geom.type === 'Polygon') rings = [geom.coordinates];
-  else if(geom.type === 'MultiPolygon') rings = geom.coordinates;
-  else return [];
-  return rings.map(part => decimateRing(part[0].map(([lon,lat]) => projectLonLat(lon, lat)), 300))
-    .filter(r => r.length >= 3);
-}
-// Sibling to allOuterRingsWorld for LineString/MultiLineString geometry (streets), not
-// Polygon/MultiPolygon. No "outer ring" concept for a line — every part of a MultiLineString
-// matters (e.g. a dual-carriageway avenue's two separate roadbeds), so this keeps them all,
-// unlike allOuterRingsWorld dropping holes. No decimation either — street segments are already
-// short (block-length), nothing like the 16,213-point coastline that made decimateRing
-// necessary above.
-function allLineStringPartsWorld(geom){
-  if(!geom || !geom.coordinates) return [];
-  let parts;
-  if(geom.type === 'LineString') parts = [geom.coordinates];
-  else if(geom.type === 'MultiLineString') parts = geom.coordinates;
-  else return [];
-  return parts.map(part => part.map(([lon,lat]) => projectLonLat(lon, lat))).filter(p => p.length >= 2);
-}
-
-// Real NYC borough coastline data comes back at absurd resolution for a context layer — one
-// borough's main landmass alone had 16,213 points. THREE.ShapeGeometry's ear-clipping
-// triangulator breaks down at that density (diagonal sliver triangles instead of a clean fill),
-// while the same ring decimated to ~300 points triangulates cleanly. This is a
-// reference/backdrop layer, not the data itself, so losing fine coastline detail costs nothing
-// that matters here — evenly-spaced index sampling (not a true Douglas-Peucker simplification)
-// is enough, and cheap.
-function decimateRing(ring, maxPoints){
-  if(ring.length <= maxPoints) return ring;
-  const step = Math.max(1, Math.floor(ring.length / maxPoints));
-  const out = [];
-  for(let i=0; i<ring.length; i+=step) out.push(ring[i]);
-  const last = ring[ring.length-1];
-  if(out[out.length-1] !== last) out.push(last);
-  return out;
-}
-
-// NORTH ORIENTATION — worked through explicitly rather than asserted, since this project has
-// already been burned twice by confident-but-wrong claims about live behavior:
-//   projectLonLat: zFt = -(lat-REF_LAT)*FT_PER_DEG_LAT, so increasing latitude (going north)
-//   moves a point toward DECREASING world Z. "North" in this scene is the -Z direction.
-//   updateCameraPosition (see below) at azimuth=0 places the camera at
-//   camTarget.z + camDist (i.e. south of the target, at LARGER z) and always looks at
-//   camTarget — so at azimuth=0 the camera looks toward -Z, i.e. it looks north. That's the
-//   standard "north-up" map convention (viewer south of the scene, facing north).
-//   updateCompass() rotates the needle by -camAzimuth: as azimuth increases the camera orbits
-//   toward +X (east) and the scene appears, on screen, to rotate the other way — so the needle
-//   has to counter-rotate to keep pointing at true north as the user actually perceives it.
-// Both the compass and the Plan View button below rely on azimuth=0 meaning true north-up.
-
-/* ================= Color modes ================= */
-const LANDUSE_LABELS = {
-  '01':'One & Two Family', '02':'Multi-Family Walkup', '03':'Multi-Family Elevator',
-  '04':'Mixed Res/Commercial', '05':'Commercial/Office', '06':'Industrial/Manufacturing',
-  '07':'Transportation/Utility', '08':'Public Facility', '09':'Open Space/Recreation',
-  '10':'Parking', '11':'Vacant Land'
-};
-const LANDUSE_COLORS = {
-  '01':0xC8932A, '02':0xB23A2E, '03':0x8E4529, '04':0xE28A5C,
-  '05':0x1F4E79, '06':0x5A5F66, '07':0x746553, '08':0x3E7A4C,
-  '09':0x6FA87A, '10':0x9C9587, '11':0xCFC8B4
-};
-// Live-confirmed: landuse values from 64uk-42ks are unpadded ("1".."11"), not "01".."11".
-function luCode(lot){ return String(lot.landuse||'').padStart(2,'0'); }
-function colorForLandUse(lu){ return LANDUSE_COLORS[lu] || 0x9C9587; }
-
-function maxAllowedFar(lot){
-  return Math.max(Number(lot.residfar)||0, Number(lot.commfar)||0, Number(lot.facilfar)||0);
-}
-function farUtilization(lot){
-  const maxFar = maxAllowedFar(lot);
-  const built = Number(lot.builtfar)||0;
-  if(maxFar <= 0) return null;
-  return built / maxFar;
-}
-function colorForFarUtilization(lot){
-  const u = farUtilization(lot);
-  if(u === null) return 0x9C9587;
-  const t = Math.max(0, Math.min(1.15, u)) / 1.15;
-  const c = new THREE.Color();
-  c.setHSL(0.02 + t*0.32, 0.55, 0.42);
-  return c.getHex();
-}
-function colorForYearBuilt(lot){
-  const yr = Number(lot.yearbuilt) || 0;
-  if(yr < 1800) return 0x9C9587;
-  const t = Math.max(0, Math.min(1, (yr - 1850) / (2026 - 1850)));
-  const c = new THREE.Color();
-  c.setHSL(0.6 - t*0.55, 0.5, 0.42);
-  return c.getHex();
-}
-function colorForLot(rec, mode){
-  const lot = rec.lot;
-  if(mode === 'landuse') return colorForLandUse(luCode(lot));
-  if(mode === 'far') return colorForFarUtilization(lot);
-  if(mode === 'year') return colorForYearBuilt(lot);
-  if(mode === 'neighborhood') return colorForNeighborhood(rec.nta2020);
-  return 0x9C9587;
-}
-
-// Discrete, filterable buckets for the two continuous-gradient color modes — mirrors the bucket
-// boundaries already described in the FAR legend text and the year-color gradient's own range.
-const FAR_BUCKETS = [
-  {key:'under', label:'Underbuilt (<50%)', swatch:0xB23A2E},
-  {key:'partial', label:'Partial (50–100%)', swatch:0xC8932A},
-  {key:'atOrOver', label:'At/over capacity (100%+)', swatch:0x3E7A4C},
-  {key:'unknown', label:'No applicable zoning FAR', swatch:0x9C9587},
 ];
-function farBucketKey(lot){
-  const u = farUtilization(lot);
-  if(u === null) return 'unknown';
-  if(u < 0.5) return 'under';
-  if(u < 1.0) return 'partial';
-  return 'atOrOver';
+
+let ROOM_W, ROOM_D, ROOM_BOTTOM, TRAY_TOP, TRAY_H, svgW, svgH;
+function applyRoomPlan(plan){
+  ROOM_W = plan.w;
+  ROOM_D = plan.d;
+  ROOM_BOTTOM = MARGIN + ROOM_D * SCALE;
+  TRAY_TOP = ROOM_BOTTOM + 64;
+  TRAY_H = 108;
+  svgW = ROOM_W * SCALE + MARGIN * 2;
+  svgH = TRAY_TOP + TRAY_H;
 }
-const YEAR_ERAS = [
-  {key:'unknown', label:'Unknown', max:1800},
-  {key:'pre1900', label:'Before 1900', max:1900},
-  {key:'e1900', label:'1900–1945', max:1945},
-  {key:'e1945', label:'1945–1980', max:1980},
-  {key:'e1980', label:'1980–2000', max:2000},
-  {key:'e2000', label:'2000–present', max:Infinity},
+applyRoomPlan(roomPlans[0]);
+
+const palettes = [
+  { id: 'scandi', label: 'Scandi Calm' },
+  { id: 'dark-academia', label: 'Dark Academia' },
+  { id: 'frat-boy', label: 'Frat Boy' },
+  { id: 'girly', label: 'Girly' }
 ];
-function yearEraKey(lot){
-  const yr = Number(lot.yearbuilt) || 0;
-  for(const era of YEAR_ERAS) if(yr < era.max) return era.key;
-  return 'e2000';
-}
-function yearEraSwatch(key){
-  // sample colorForYearBuilt at a representative year for each era, so the legend swatch
-  // always matches what's actually painted on the buildings in that bucket
-  const sampleYear = {unknown:0, pre1900:1875, e1900:1922, e1945:1962, e1980:1990, e2000:2015}[key];
-  return colorForYearBuilt({yearbuilt: sampleYear});
-}
 
-/* ================= Three.js scene ================= */
-let scene, camera, renderer, ground;
-// Manhattan (and the other boroughs) run roughly north-south, so azimuth=0 puts the camera due
-// south of the target looking north (per the camera-position formula below:
-// x=camTarget.x+dist*cos(el)*sin(az), z=camTarget.z+dist*cos(el)*cos(az) — at az=0, sin=0/cos=1,
-// so the camera sits at larger Z, i.e. south, facing north), a sensible north-up default.
-const INITIAL_CAM = {azimuth: 0, elevation: 0.55, dist: 750};
-let camDist = INITIAL_CAM.dist, camAzimuth = INITIAL_CAM.azimuth, camElevation = INITIAL_CAM.elevation;
-let camTarget = new THREE.Vector3(0,0,0);
-let colorMode = 'landuse';
-let showEnvelope = false;
-let currentRecords = [];
-let currentBoroDigit = 1; // tracks the active borough tab, so clearing a neighborhood filter knows what to fall back to
-let activeNeighborhood = null; // {ntaname, nta2020, boroname} while a neighborhood filter is active, else null
-const hiddenCategories = new Set();
+// category footprints in feet — no fixed position; placement is drag-driven
+const categories = [
+  { id: 'bed',   label: 'Bed',   w: 3.3, d: 6.5 },
+  { id: 'desk',  label: 'Desk',  w: 2.3, d: 1.8 },
+  { id: 'chair', label: 'Chair', w: 1.6, d: 1.6 },
+  { id: 'lamp',  label: 'Lamp',  w: 0.5, d: 0.5 },
+  { id: 'rug',   label: 'Rug',   w: 4,   d: 3 }
+];
 
-// Smooth camera tween — used by Recenter and the north-compass reset so both feel like
-// deliberate moves instead of an instant snap. shortestAngleDelta() avoids spinning the
-// long way around when animating azimuth back toward north.
-let camTween = null;
-function shortestAngleDelta(from, to){
-  let d = (to - from) % (Math.PI*2);
-  if(d > Math.PI) d -= Math.PI*2;
-  if(d < -Math.PI) d += Math.PI*2;
-  return d;
-}
-function easeInOutCubic(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2; }
-function animateCameraTo({azimuth, elevation, dist, target}, duration=650){
-  camTween = {
-    fromAz: camAzimuth, toAz: camAzimuth + shortestAngleDelta(camAzimuth, azimuth),
-    fromEl: camElevation, toEl: elevation,
-    fromDist: camDist, toDist: dist,
-    fromTarget: camTarget.clone(), toTarget: target.clone(),
-    start: performance.now(), duration
-  };
-}
-function stepCameraTween(now){
-  if(!camTween) return false;
-  const t = Math.min(1, (now - camTween.start) / camTween.duration);
-  const e = easeInOutCubic(t);
-  camAzimuth = camTween.fromAz + (camTween.toAz - camTween.fromAz) * e;
-  camElevation = camTween.fromEl + (camTween.toEl - camTween.fromEl) * e;
-  camDist = camTween.fromDist + (camTween.toDist - camTween.fromDist) * e;
-  camTarget.lerpVectors(camTween.fromTarget, camTween.toTarget, e);
-  if(t >= 1) camTween = null;
-  return true;
-}
-function recenterView(){
-  animateCameraTo({azimuth: INITIAL_CAM.azimuth, elevation: INITIAL_CAM.elevation, dist: INITIAL_CAM.dist, target: new THREE.Vector3(0,0,0)});
-  inPlanView = false;
-}
-// Frames the camera on a neighborhood's extent after selectNeighborhood loads it —
-// same centroid convention as buildBoroughLabelSprite's placement (largest ring, area-weighted
-// centroid), with distance solved from the ring's bounding-box diagonal against this app's
-// fixed 55-degree FOV (see initScene) instead of a guessed constant, so it works for both a
-// small neighborhood and a large one without retuning.
-function frameCameraOnRings(rings){
-  if(!rings.length) return;
-  let main = rings[0];
-  for(const r of rings){ if(r.length > main.length) main = r; }
-  const [cx, cz] = ringCentroid(main);
-  let minX=Infinity, maxX=-Infinity, minZ=Infinity, maxZ=-Infinity;
-  for(const [x,z] of main){ if(x<minX)minX=x; if(x>maxX)maxX=x; if(z<minZ)minZ=z; if(z>maxZ)maxZ=z; }
-  const span = Math.max(maxX-minX, maxZ-minZ);
-  const dist = Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, (span/2) / Math.tan((55/2)*Math.PI/180) * 1.4));
-  animateCameraTo({azimuth: INITIAL_CAM.azimuth, elevation: INITIAL_CAM.elevation, dist, target: new THREE.Vector3(cx, 0, cz)});
-}
-function resetToNorth(){
-  animateCameraTo({azimuth: 0, elevation: camElevation, dist: camDist, target: camTarget});
-}
-
-// Plan view — a straight-down reading of the massing, always north-up (azimuth locked to 0,
-// see the NORTH ORIENTATION note near allOuterRingsWorld). Elevation is capped just shy of
-// pi/2 (not exactly vertical) deliberately: at exactly 90 degrees the camera's forward vector
-// becomes parallel to its up vector, which is the standard gimbal-lock case for a lookAt()
-// camera — the on-screen "up" direction becomes numerically unstable right at the pole. This
-// is close enough to a true plan view to be indistinguishable in practice while staying clear
-// of that singularity.
-const PLAN_VIEW_ELEVATION = 1.555; // ~89.1 degrees
-let inPlanView = false;
-let prePlanCam = null;
-function togglePlanView(){
-  if(inPlanView){
-    if(prePlanCam) animateCameraTo(prePlanCam);
-    inPlanView = false;
-  } else {
-    prePlanCam = {azimuth: camAzimuth, elevation: camElevation, dist: camDist, target: camTarget.clone()};
-    animateCameraTo({azimuth: 0, elevation: PLAN_VIEW_ELEVATION, dist: camDist, target: camTarget});
-    inPlanView = true;
-  }
-  document.getElementById('planViewBtn').classList.toggle('active', inPlanView);
-  document.getElementById('planViewBtn').textContent = inPlanView ? '◱ 3D View' : '◱ Plan View';
-}
-
-const nearGroup = new THREE.Group();   // full extrusion + floor lines
-const midGroup = new THREE.Group();    // bounding-box prism
-const farGroup = new THREE.Group();    // billboard points
-const envelopeGroup = new THREE.Group();
-const contextGroup = new THREE.Group(); // borough outlines — loaded once, independent of the per-borough lot data
-const streetGroup = new THREE.Group(); // major streets — same "loaded once, citywide, independent of per-borough lot data" philosophy as contextGroup
-streetGroup.visible = false;
-let showStreets = false; // opt-in, same posture as showEnvelope — a citywide street layer is real clutter risk if it's on by default
-const labelGroup = new THREE.Group(); // borough name labels, same load pass as the outlines
-let farPoints = null, farPointRecords = [];
-
-const NEAR_MAX_DIST = 14;
-// MID_MAX_DIST controls how far out the mid (block) LOD stays active before falling back to
-// far (dot) — mid tier is cheap simple-box geometry (frustum-culled like everything else), so
-// there's no perf reason for this to be tight. Set generously so block-level mass forms appear
-// across the range people actually zoom to, not just the last quarter of it.
-const MID_MAX_DIST = 200;
-
-// Zoom-in floor: 0.35 world units (=17.5ft, given FEET_PER_WORLD_UNIT=50), safe against the
-// camera's near-clip plane of 0.1 — close enough to inspect a single building's facade.
-// PAN_MIN_DIST puts a floor under the effective distance used for pan speed (a flat
-// camDist*0.0018 with no floor means a full-screen drag barely moves the target as camDist
-// approaches the zoom minimum) so close-in panning stays usable even at the true zoom minimum.
-const MIN_CAM_DIST = 0.35;
-const MAX_CAM_DIST = 1400;
-const PAN_MIN_DIST = 3;
-
-// A flat solid-color background reads as noticeably harsh/bright in day mode against a full-
-// bleed canvas with no other visual texture. Building a small vertical-gradient canvas texture
-// instead of a THREE.Color — same trick used for a sky dome in far cheaper form, since this is
-// a static backdrop, not something the camera flies through. Fog color is kept a plain
-// THREE.Color matching the gradient's HORIZON stop specifically (not the zenith), since fog
-// only ever visually matters near the ground/horizon at this camera's typical elevation range —
-// THREE.Fog itself has no gradient support.
-// The light theme's zenith (#C7D9E6) and horizon (#EDEAE0) are both high-lightness,
-// low-saturation pastels sitting only ~10 lightness-units apart, and the horizon stop nearly
-// matches the light-theme UI panels' own cream tone (see the header/panel
-// rgba(237,234,224,...) rule above) — sky and chrome need real separation, or they blur
-// together and read as flat/washed out rather than as a real sky. Zenith is deepened and
-// re-saturated so it reads as sky, with a soft mid stop for a less abrupt transition, and the
-// horizon warmed slightly so it stays light without visually merging into the UI panels. Dark
-// mode uses a real 3-stop dusk gradient — deep navy zenith, a dusky violet twilight band, warm
-// amber glow at the horizon — evoking a city skyline at sunset rather than a flat dark
-// background. Stops are an ordered array (not a fixed zenith/horizon pair) so either theme can
-// use 2 or 3+ stops; fog tracks the LAST stop specifically (the horizon/ground-level color),
-// since fog only visually matters near the ground at this camera's typical elevation range.
-// Note on stop placement: scene.background stretches this texture across the ENTIRE render
-// canvas top-to-bottom (y=0 zenith to y=256 horizon), but the actual 3D ground plane occludes
-// everything below the true geometric horizon line, which in this app's typical oblique camera
-// framing sits well below screen center — only the top ~30% of the canvas height is ever
-// actually visible. Stops are front-loaded so the zenith cap is brief and the violet/amber glow
-// arrives within that visible top-30% band, rather than living in a bottom half that's
-// structurally never on screen.
-const SKY_STOPS = {
-  light: [
-    {at:0,    color:'#5B90C9'},
-    {at:0.55, color:'#BFD8EA'},
-    {at:1,    color:'#F0E9D8'}
+const products = {
+  bed: [
+    { id: 'sc-bed', palette: 'scandi', name: 'Oslo Frame Bed', color: '#E8E2D8', price: 249 },
+    { id: 'da-bed', palette: 'dark-academia', name: 'Wren Frame Bed', color: '#3A2E28', price: 329 },
+    { id: 'fb-bed', palette: 'frat-boy', name: 'Bunker Bed Frame', color: '#333F4D', price: 199 },
+    { id: 'gl-bed', palette: 'girly', name: 'Blush Canopy Bed', color: '#E7C2C9', price: 289 }
   ],
-  dark: [
-    {at:0,    color:'#12142A'},
-    {at:0.15, color:'#2C2140'},
-    {at:0.32, color:'#6B3B54'},
-    {at:0.55, color:'#C9713F'},
-    {at:1,    color:'#E8944F'}
+  desk: [
+    { id: 'sc-desk', palette: 'scandi', name: 'Birk Desk', color: '#DED6C4', price: 189 },
+    { id: 'da-desk', palette: 'dark-academia', name: 'Hollis Writing Desk', color: '#4A3B2E', price: 259 },
+    { id: 'fb-desk', palette: 'frat-boy', name: 'Gameday Desk', color: '#5C4530', price: 149 },
+    { id: 'gl-desk', palette: 'girly', name: 'Vanity Desk', color: '#F1E6DA', price: 229 }
+  ],
+  chair: [
+    { id: 'sc-chair', palette: 'scandi', name: 'Fenn Chair', color: '#C9B79A', price: 129 },
+    { id: 'da-chair', palette: 'dark-academia', name: 'Aldric Armchair', color: '#5C4632', price: 189 },
+    { id: 'fb-chair', palette: 'frat-boy', name: 'Bleacher Gaming Chair', color: '#7A2E2E', price: 159 },
+    { id: 'gl-chair', palette: 'girly', name: 'Boucle Vanity Chair', color: '#D89AA6', price: 179 }
+  ],
+  lamp: [
+    { id: 'sc-lamp', palette: 'scandi', name: 'Bough Lamp', color: '#D9CFC1', price: 45 },
+    { id: 'da-lamp', palette: 'dark-academia', name: 'Brass Task Lamp', color: '#8A6A3A', price: 68 },
+    { id: 'fb-lamp', palette: 'frat-boy', name: 'Neon Sign Lamp', color: '#D9A62B', price: 39 },
+    { id: 'gl-lamp', palette: 'girly', name: 'Pearl Vanity Lamp', color: '#EAD9B8', price: 58 }
+  ],
+  rug: [
+    { id: 'sc-rug', palette: 'scandi', name: 'Nordic Stripe Rug', color: '#EDE7DC', price: 79 },
+    { id: 'da-rug', palette: 'dark-academia', name: 'Bordeaux Kilim Rug', color: '#5A2A28', price: 99 },
+    { id: 'fb-rug', palette: 'frat-boy', name: 'Turf Zone Rug', color: '#3F6B44', price: 49 },
+    { id: 'gl-rug', palette: 'girly', name: 'Cloud Faux-Fur Rug', color: '#F4E9EC', price: 95 }
   ]
 };
-// ground.material.color is set once at scene creation in initScene(), from whatever
-// currentTheme() is at boot — every theme toggle rebuilds the sky texture and fog color (both
-// go through applySkyBackground()) and must also update the ground mesh, or a theme toggle
-// leaves the ground on the old theme's base color while sky/fog move on, producing an
-// unintended color blend. `ground` is module-scoped and every theme toggle uses the same
-// GROUND_COLORS lookup as the initial creation, so they can't drift apart.
-const GROUND_COLORS = {light: 0xE1DBC7, dark: 0x1B1F25};
-// Reuses the same borough-outline ring data already fetched for the outline ribbons (world-space
-// [x,z] polygons, decimated to ~300 pts/part in allOuterRingsWorld) to paint a real land/water
-// mask onto the ground as a canvas texture, instead of extruding actual 3D geometry for a
-// landmass. Deliberately NOT using THREE.ShapeGeometry/earcut triangulation here — real NYC
-// coastline data (decimated or not) can develop self-intersections that the ear-clipper can't
-// handle even where the source ring had none (see addBoroughOutlineMeshes above). Canvas 2D's
-// own path fill uses the nonzero winding rule and never triangulates, so it structurally can't
-// hit that failure mode — worst case on a self-intersecting ring is a slightly odd fill at one
-// seam, never a crash or a shearing artifact.
-const WATER_COLORS = {light: 0x8FB4D9, dark: 0x0E1420};
-let boroughLandRings = []; // populated once by loadBoroughOutlines(), reused on every theme toggle
-function buildGroundTexture(theme){
-  if(!boroughLandRings.length){
-    // outlines haven't loaded yet (or the fetch failed) — fall back to the old flat land color
-    // rather than flashing solid water blue for however long that takes / forever on failure
-    const canvas = document.createElement('canvas');
-    canvas.width = 2; canvas.height = 2;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = new THREE.Color(GROUND_COLORS[theme]).getStyle();
-    ctx.fillRect(0, 0, 2, 2);
-    return new THREE.CanvasTexture(canvas);
-  }
-  // matches the ground plane's 4000x4000 world-unit extent at 2 world units (~100ft) per pixel —
-  // plenty for a backdrop wash, same "reference layer, not the data itself" reasoning already
-  // used for decimating the outline rings themselves
-  const SIZE = 2048;
-  const canvas = document.createElement('canvas');
-  canvas.width = SIZE; canvas.height = SIZE;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = new THREE.Color(WATER_COLORS[theme]).getStyle();
-  ctx.fillRect(0, 0, SIZE, SIZE);
-  // ground = PlaneGeometry(4000,4000) rotated -PI/2 about X, centered at world (0,0). That
-  // rotation maps local plane-Y to world Z=-localY, so world X in [-2000,2000] maps straight to
-  // u in [0,1]. For V it's easy to double-count the flip: the vertex UVs alone need
-  // v=(2000-Z)/4000, but THREE.CanvasTexture defaults flipY=true, which ALREADY inverts the
-  // canvas's vertical axis on upload (canvas row 0/top ends up at v=1, not v=0). Manually
-  // flipping Z again on top of that double-flips it back to the wrong orientation — mirrors the
-  // mask north-south against the real borough outlines. The canvas row therefore needs the
-  // DIRECT (unflipped) relationship to world Z — flipY supplies the one flip this mapping needs.
-  ctx.fillStyle = new THREE.Color(GROUND_COLORS[theme]).getStyle();
-  for(const ring of boroughLandRings){
-    if(ring.length < 3) continue;
-    ctx.beginPath();
-    for(let i=0;i<ring.length;i++){
-      const [x,z] = ring[i];
-      const px = (x + 2000) / 4000 * SIZE;
-      const py = (z + 2000) / 4000 * SIZE;
-      if(i===0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-    }
-    ctx.closePath();
-    ctx.fill();
-  }
-  return new THREE.CanvasTexture(canvas);
-}
-function applyGroundTexture(){
-  if(!ground) return;
-  const theme = currentTheme();
-  if(ground.material.map && ground.material.map.dispose) ground.material.map.dispose();
-  ground.material.map = buildGroundTexture(theme);
-  // base color must be white so the texture's own land/water colors show through unmultiplied
-  ground.material.color.setHex(0xffffff);
-  ground.material.needsUpdate = true;
-}
-// Fog color used to be derived from SKY_STOPS' LAST stop, which is intentionally vivid and
-// saturated (#E8944F) for the sky gradient's sunset look. But fog blends toward its color with
-// distance, and at typical camera distances (fog's near distance is 1200, MAX_CAM_DIST is
-// 1400), large stretches of the 4000-unit ground plane get blended toward that color — so a
-// vivid sky peak color makes a poor fog color. FOG_COLORS is its own lookup, decoupled from
-// whatever SKY_STOPS' last entry happens to be, and kept muted.
-const FOG_COLORS = {light: '#F0E9D8', dark: '#4A3730'};
-function buildSkyTexture(theme){
-  const stops = SKY_STOPS[theme];
-  const canvas = document.createElement('canvas');
-  canvas.width = 2; canvas.height = 256;
-  const ctx = canvas.getContext('2d');
-  const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  for(const s of stops) grad.addColorStop(s.at, s.color);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 2, 256);
-  const tex = new THREE.CanvasTexture(canvas);
-  return tex;
-}
-function applySkyBackground(){
-  const theme = currentTheme() === 'dark' ? 'dark' : 'light';
-  if(scene.background && scene.background.dispose) scene.background.dispose();
-  scene.background = buildSkyTexture(theme);
-  const horizonHex = new THREE.Color(FOG_COLORS[theme]).getHex();
-  if(!scene.fog) scene.fog = new THREE.Fog(horizonHex, 1200, 3200);
-  else scene.fog.color.setHex(horizonHex);
-  // ground doesn't exist yet on the very first call (initScene calls this before creating the
-  // ground mesh) — applyGroundTexture() itself guards on `ground` for that case; every later
-  // theme toggle (and the first real texture build once outlines load) goes through it too, so
-  // land/water colors and the flat-color fallback can never drift out of sync with the theme
-  applyGroundTexture();
-}
 
-// At a low MIN_CAM_DIST, the camera can end up INSIDE a building's extruded volume (0.35 world
-// units = 17.5ft, well within a typical NYC footprint's half-width). MeshLambertMaterial
-// defaults to FrontSide, so every surrounding face is a backface from inside — invisible — and
-// the canvas renders as solid black. That reads as "stuck": panning/rotating inside a solid box
-// has no visible reference point in any direction, even though the camera state is actually
-// changing. MIN_CAM_DIST alone can't fix this — it's a fixed distance from camTarget, not a
-// distance from the nearest surface, so any real building bigger than the floor can still
-// swallow the camera. Fixed with a raycast collision clamp: cast a ray from camTarget out
-// toward the camera on every zoom-in step and never let camDist pass the nearest hit (minus a
-// small buffer), falling back to MIN_CAM_DIST only in open areas with nothing to hit.
-const camRaycaster = new THREE.Raycaster();
-const ZOOM_SURFACE_BUFFER = 0.15; // stop just short of the surface, not flush against it
-function nearestSurfaceDistFromTarget(){
-  const dir = new THREE.Vector3(
-    Math.cos(camElevation) * Math.sin(camAzimuth),
-    Math.sin(camElevation),
-    Math.cos(camElevation) * Math.cos(camAzimuth)
-  );
-  // start the ray a hair off the target so a hit exactly at the target (camTarget sitting on a
-  // building's own surface, the common case) doesn't immediately self-intersect at t=0
-  camRaycaster.set(camTarget.clone().addScaledVector(dir, ZOOM_SURFACE_BUFFER), dir);
-  camRaycaster.far = MAX_CAM_DIST;
-  const hits = camRaycaster.intersectObjects(nearGroup.children, false);
-  return hits.length ? hits[0].distance + ZOOM_SURFACE_BUFFER : null;
-}
-function clampZoomIn(newDist){
-  if(newDist >= camDist) return newDist; // zooming out or unchanged — geometry can't be a problem
-  const surfaceDist = nearestSurfaceDistFromTarget();
-  if(surfaceDist !== null) return Math.max(MIN_CAM_DIST, Math.min(newDist, surfaceDist));
-  return newDist; // nothing nearby (open area) — MIN_CAM_DIST alone governs
-}
+const state = {
+  palette: 'scandi',
+  roomPlan: 'nyu',
+  picks: {},
+  positions: {},
+  rotations: {}
+};
+categories.forEach(c => {
+  state.picks[c.id] = products[c.id].find(p => p.palette === state.palette).id;
+  state.positions[c.id] = null; // null = sitting in the tray, unplaced
+  state.rotations[c.id] = 0;    // degrees: 0 / 90 / 180 / 270
+});
 
-function initScene(){
-  scene = new THREE.Scene();
-  applySkyBackground();
-  camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 4000);
-  // Classic z-fighting risk: the outline sits only -0.01 world units below the y=0 ground plane
-  // (see addBoroughOutlineMeshes above), and a standard (non-logarithmic) depth buffer loses
-  // precision fast across this scene's near/far ratio (camera.near=0.1, far=4000 → 40,000:1).
-  // At typical mid-far camera distances the depth buffer can no longer reliably tell the
-  // outline and the ground apart, so different pixels of the same continuous line resolve to
-  // whichever surface wins that pixel's rounding — reads as flicker/jitter and apparent line
-  // breaks, worse as camDist grows. A logarithmic depth buffer allocates precision by relative
-  // rather than absolute distance — it fixes this for ANY thin coplanar-ish geometry in the
-  // scene, not just the borough outline, and doesn't require guessing a "big enough" offset
-  // that might still fail at some distance.
-  renderer = new THREE.WebGLRenderer({antialias:true, logarithmicDepthBuffer:true});
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  document.getElementById('canvasWrap').appendChild(renderer.domElement);
+function productById(catId, prodId){ return products[catId].find(p => p.id === prodId); }
+function fx(v){ return (v * SCALE + MARGIN).toFixed(1); }
+function fy(v){ return (v * SCALE + MARGIN).toFixed(1); }
+function total(){ return placedCategories().reduce((sum, c) => sum + productById(c.id, state.picks[c.id]).price, 0); }
+function placedCategories(){ return categories.filter(c => state.positions[c.id]); }
 
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
-  scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffffff, 0.7);
-  sun.position.set(80, 120, 60);
-  scene.add(sun);
-
-  ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(4000, 4000),
-    // DoubleSide is defense-in-depth: if the camera ever ends up below grade (e.g. a future
-    // camera bug), FrontSide would render the ground invisible from underneath instead of the
-    // visible surface, compounding a black-out rather than giving a recognizable (if
-    // upside-down-looking) reference.
-    new THREE.MeshBasicMaterial({color: GROUND_COLORS[currentTheme()], side: THREE.DoubleSide})
-  );
-  // scene.fog's near distance (1200) is LESS than MAX_CAM_DIST (1400), meaning fog is never a
-  // subtle distant-horizon effect here — it actively blends in at essentially any normal
-  // zoomed-out camera position. No fog color choice fixes that, only reducing how much of the
-  // visible ground falls inside the fog band. Rather than re-tuning fog distances for the whole
-  // scene (which would also change how buildings/streets fade with distance), the ground plane
-  // is exempted from fog specifically: it's a flat stylized reference surface, not something
-  // that benefits from atmospheric depth cueing the way real geometry does.
-  ground.material.fog = false;
-  ground.rotation.x = -Math.PI/2;
-  ground.position.y = -0.05;
-  scene.add(ground);
-
-  scene.add(nearGroup, midGroup, farGroup, envelopeGroup, contextGroup, streetGroup, labelGroup);
-
-  updateCameraPosition();
-  window.addEventListener('resize', onResize);
-  wireOrbitControls();
-  wireClickToInspect();
-  animate();
-}
-function onResize(){
-  camera.aspect = window.innerWidth/window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
-function updateCameraPosition(){
-  const x = camTarget.x + camDist * Math.cos(camElevation) * Math.sin(camAzimuth);
-  const y = camTarget.y + camDist * Math.sin(camElevation);
-  const z = camTarget.z + camDist * Math.cos(camElevation) * Math.cos(camAzimuth);
-  camera.position.set(x,y,z);
-  camera.lookAt(camTarget);
-}
-
-/* ---- custom orbit controls: drag to rotate, wheel to zoom, shift-drag to pan, pinch to zoom ---- */
-function wireOrbitControls(){
-  const dom = renderer.domElement;
-  let dragging = false, panning = false, lastX=0, lastY=0;
-  const activePointers = new Map();
-  let pinchStartDist = null, pinchStartCamDist = null;
-
-  function cancelTween(){
-    camTween = null; // any manual input interrupts an in-flight recenter/north-reset
-    if(inPlanView){
-      inPlanView = false;
-      const btn = document.getElementById('planViewBtn');
-      if(btn){ btn.classList.remove('active'); btn.textContent = '◱ Plan View'; }
-    }
-  }
-
-  dom.addEventListener('pointerdown', (e)=>{
-    cancelTween();
-    activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
-    dom.setPointerCapture(e.pointerId);
-    if(activePointers.size >= 2){
-      dragging = false;
-      const pts = [...activePointers.values()];
-      pinchStartDist = Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
-      pinchStartCamDist = camDist;
-    } else {
-      dragging = true; panning = e.shiftKey || e.button === 2;
-      lastX = e.clientX; lastY = e.clientY;
-    }
+function resetRoom(){
+  if (placedCategories().length === 0) { toast('Room is already empty'); return; }
+  confirmDialog('Clear everything currently placed in the room?', 'Reset room').then(ok => {
+    if (!ok) return;
+    categories.forEach(c => {
+      state.positions[c.id] = null;
+      state.rotations[c.id] = 0;
+    });
+    renderPlanSvg();
+    renderPanel();
+    toast('Room reset');
   });
-  dom.addEventListener('pointermove', (e)=>{
-    if(activePointers.has(e.pointerId)) activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+}
 
-    if(activePointers.size >= 2 && pinchStartDist){
-      const pts = [...activePointers.values()];
-      const dist = Math.max(1, Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y));
-      camDist = clampZoomIn(Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, pinchStartCamDist * (pinchStartDist/dist))));
-      updateCameraPosition();
-      updateLOD();
+// The room-facing bounding box at a given rotation — 90°/270° swap w/d.
+function bboxFor(cat, rotation){
+  return (rotation === 90 || rotation === 270)
+    ? { bw: cat.d, bh: cat.w }
+    : { bw: cat.w, bh: cat.d };
+}
+
+function luminance(hex){
+  const c = hex.replace('#', '');
+  const r = parseInt(c.substr(0,2),16), g = parseInt(c.substr(2,2),16), b = parseInt(c.substr(4,2),16);
+  return 0.299*r + 0.587*g + 0.114*b;
+}
+
+function furnitureShape(catId, x, y, w, h, color){
+  const stroke = luminance(color) > 150 ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.45)';
+  let s = '';
+
+  if (catId === 'lamp') {
+    const cx = x + w/2, cy = y + h/2, r = Math.min(w,h)/2;
+    s += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r.toFixed(1)}" fill="${color}" stroke="rgba(0,0,0,0.25)" stroke-width="1"/>`;
+    s += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(r*0.3).toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="1"/>`;
+    [0, 90, 180, 270].forEach(deg => {
+      const rad = deg * Math.PI / 180;
+      const x1 = cx + Math.cos(rad)*r*0.85, y1 = cy + Math.sin(rad)*r*0.85;
+      const x2 = cx + Math.cos(rad)*r*1.15, y2 = cy + Math.sin(rad)*r*1.15;
+      s += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${stroke}" stroke-width="1"/>`;
+    });
+    return s;
+  }
+
+  s += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" stroke="rgba(0,0,0,0.25)" stroke-width="1" rx="2"/>`;
+
+  if (catId === 'bed') {
+    const pillowW = w*0.55, pillowH = h*0.12, px = x + (w-pillowW)/2, py = y + h*0.08;
+    s += `<rect x="${px.toFixed(1)}" y="${py.toFixed(1)}" width="${pillowW.toFixed(1)}" height="${pillowH.toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="1" rx="3"/>`;
+    const foldY = y + h*0.3;
+    s += `<line x1="${(x+4).toFixed(1)}" y1="${foldY.toFixed(1)}" x2="${(x+w-4).toFixed(1)}" y2="${foldY.toFixed(1)}" stroke="${stroke}" stroke-width="1"/>`;
+  } else if (catId === 'desk') {
+    const inset = Math.min(w,h)*0.16;
+    s += `<rect x="${(x+inset).toFixed(1)}" y="${(y+inset).toFixed(1)}" width="${(w-inset*2).toFixed(1)}" height="${(h-inset*2).toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="1"/>`;
+  } else if (catId === 'chair') {
+    s += `<line x1="${(x+3).toFixed(1)}" y1="${(y+4).toFixed(1)}" x2="${(x+w-3).toFixed(1)}" y2="${(y+4).toFixed(1)}" stroke="${stroke}" stroke-width="3"/>`;
+  } else if (catId === 'rug') {
+    const inset = Math.min(w,h)*0.1;
+    s += `<rect x="${(x+inset).toFixed(1)}" y="${(y+inset).toFixed(1)}" width="${(w-inset*2).toFixed(1)}" height="${(h-inset*2).toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="1" stroke-dasharray="4 3" rx="2"/>`;
+  }
+  return s;
+}
+
+// A door/window spans from/to feet measured along the given wall, from (0,0).
+function wallOpeningLine(wall, fromFt, toFt, strokeVar, widthPx){
+  let x1, y1, x2, y2;
+  if (wall === 'north') { y1 = y2 = fy(0); x1 = fx(fromFt); x2 = fx(toFt); }
+  else if (wall === 'south') { y1 = y2 = fy(ROOM_D); x1 = fx(fromFt); x2 = fx(toFt); }
+  else if (wall === 'west') { x1 = x2 = fx(0); y1 = fy(fromFt); y2 = fy(toFt); }
+  else { x1 = x2 = fx(ROOM_W); y1 = fy(fromFt); y2 = fy(toFt); }
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${strokeVar}" stroke-width="${widthPx}"/>`;
+}
+
+// Short dashed tick hinting at a door swing, without per-wall arc geometry.
+function doorSwingTick(wall, hingeFt){
+  const depth = 2;
+  let x1, y1, x2, y2;
+  if (wall === 'north') { x1 = x2 = fx(hingeFt); y1 = fy(0); y2 = fy(depth); }
+  else if (wall === 'south') { x1 = x2 = fx(hingeFt); y1 = fy(ROOM_D); y2 = fy(ROOM_D - depth); }
+  else if (wall === 'west') { y1 = y2 = fy(hingeFt); x1 = fx(0); x2 = fx(depth); }
+  else { y1 = y2 = fy(hingeFt); x1 = fx(ROOM_W); x2 = fx(ROOM_W - depth); }
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--plan-line)" stroke-width="1" stroke-dasharray="2 3" opacity="0.6"/>`;
+}
+
+function closetMarkup(closet){
+  const x = fx(closet.x), y = fy(closet.y), w = closet.w * SCALE, h = closet.d * SCALE;
+  const labelX = fx(closet.x + closet.w / 2), labelY = fy(closet.y + closet.d / 2);
+  return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="var(--plan-line)" stroke-width="1.5" stroke-dasharray="3 3"/>` +
+    `<text x="${labelX}" y="${labelY}" fill="var(--plan-line)" font-size="10.5" font-weight="600" text-anchor="middle" dominant-baseline="middle" font-family="Inter, sans-serif">CLOSET</text>`;
+}
+
+function renderPlanSvg(){
+  const plan = roomPlans.find(p => p.id === state.roomPlan);
+  let parts = [];
+
+  for (let gx = 0; gx <= ROOM_W; gx++) {
+    const x = fx(gx);
+    parts.push(`<line x1="${x}" y1="${MARGIN}" x2="${x}" y2="${MARGIN + ROOM_D*SCALE}" stroke="var(--plan-line-soft)" stroke-width="1"/>`);
+  }
+  for (let gy = 0; gy <= ROOM_D; gy++) {
+    const y = fy(gy);
+    parts.push(`<line x1="${MARGIN}" y1="${y}" x2="${MARGIN + ROOM_W*SCALE}" y2="${y}" stroke="var(--plan-line-soft)" stroke-width="1"/>`);
+  }
+
+  parts.push(`<rect x="${MARGIN}" y="${MARGIN}" width="${ROOM_W*SCALE}" height="${ROOM_D*SCALE}" fill="none" stroke="var(--plan-line)" stroke-width="2"/>`);
+
+  parts.push(closetMarkup(plan.closet));
+
+  parts.push(wallOpeningLine(plan.door.wall, plan.door.from, plan.door.to, 'var(--plan-canvas)', 4));
+  parts.push(doorSwingTick(plan.door.wall, plan.door.from));
+
+  parts.push(wallOpeningLine(plan.window.wall, plan.window.from, plan.window.to, 'var(--plan-line)', 4));
+
+  // placed furniture — rug first (under everything), lamp last (on top)
+  const order = ['rug', 'bed', 'desk', 'chair', 'lamp'];
+  order.forEach(catId => {
+    const cat = categories.find(c => c.id === catId);
+    const pos = state.positions[catId];
+    if (!pos) return;
+    const prod = productById(catId, state.picks[catId]);
+    const rot = state.rotations[catId] || 0;
+    const bbox = bboxFor(cat, rot);
+
+    // center of the rotated bbox — position is always this box's top-left
+    const centerXFt = pos.x + bbox.bw / 2;
+    const centerYFt = pos.y + bbox.bh / 2;
+    const centerPxX = fx(centerXFt), centerPxY = fy(centerYFt);
+
+    // shape drawn at true intrinsic w×d, centered here, then rotated in place
+    const rectXFt = centerXFt - cat.w / 2, rectYFt = centerYFt - cat.d / 2;
+    const rectPxX = parseFloat(fx(rectXFt)), rectPxY = parseFloat(fy(rectYFt));
+    const wPx = cat.w * SCALE, hPx = cat.d * SCALE;
+
+    parts.push(`<g class="drag-item" data-cat="${catId}" style="cursor:grab;touch-action:none;">`);
+    parts.push(`<g transform="rotate(${rot} ${centerPxX} ${centerPxY})">`);
+    parts.push(furnitureShape(catId, rectPxX, rectPxY, wPx, hPx, prod.color));
+    parts.push(`</g>`);
+
+    if (bbox.bw >= 1.2) {
+      const labelColor = luminance(prod.color) > 150 ? '#221F1A' : '#F3F0E6';
+      const dimText = `${bbox.bw.toFixed(1)}' × ${bbox.bh.toFixed(1)}'`;
+      parts.push(`<text x="${centerPxX}" y="${(parseFloat(centerPxY)-6).toFixed(1)}" fill="${labelColor}" font-size="12.5" font-weight="600" text-anchor="middle" dominant-baseline="middle" font-family="Inter, sans-serif" opacity="0.88">${escapeHtml(cat.label)}</text>`);
+      parts.push(`<text x="${centerPxX}" y="${(parseFloat(centerPxY)+10).toFixed(1)}" fill="${labelColor}" font-size="10" font-weight="500" text-anchor="middle" dominant-baseline="middle" font-family="Inter, sans-serif" opacity="0.7">${dimText}</text>`);
+    }
+
+    if (catId !== 'lamp') {
+      const hx = fx(pos.x + bbox.bw - 0.35);
+      const hy = fy(pos.y + 0.35);
+      parts.push(`<g class="rotate-handle" data-cat="${catId}" style="cursor:pointer;">`);
+      parts.push(`<circle cx="${hx}" cy="${hy}" r="10" fill="var(--plan-canvas)" stroke="var(--plan-line)" stroke-width="1"/>`);
+      parts.push(`<text x="${hx}" y="${hy}" fill="var(--plan-line)" font-size="12" text-anchor="middle" dominant-baseline="central" font-family="Inter, sans-serif">&#8635;</text>`);
+      parts.push(`</g>`);
+    }
+
+    parts.push(`</g>`);
+  });
+
+  parts.push(`<text x="${MARGIN + ROOM_W*SCALE/2}" y="${ROOM_BOTTOM + 20}" fill="var(--plan-line)" font-size="12" font-weight="500" text-anchor="middle" font-family="Inter, sans-serif">${ROOM_W}' - 0"</text>`);
+  parts.push(`<text x="16" y="${MARGIN + ROOM_D*SCALE/2}" fill="var(--plan-line)" font-size="12" font-weight="500" text-anchor="middle" font-family="Inter, sans-serif" transform="rotate(-90 16 ${MARGIN + ROOM_D*SCALE/2})">${ROOM_D}' - 0"</text>`);
+
+  // tray — unplaced items, drag up into the room
+  parts.push(`<line x1="${MARGIN}" y1="${TRAY_TOP - 34}" x2="${svgW - MARGIN}" y2="${TRAY_TOP - 34}" stroke="var(--plan-line-soft)" stroke-width="1"/>`);
+  parts.push(`<text x="${MARGIN}" y="${TRAY_TOP - 16}" fill="var(--plan-line)" font-size="10.5" font-weight="600" font-family="Inter, sans-serif" opacity="0.85">DRAG INTO ROOM</text>`);
+  parts.push(`<rect x="${MARGIN}" y="${TRAY_TOP}" width="${ROOM_W*SCALE}" height="${TRAY_H}" fill="none" stroke="var(--plan-line-soft)" stroke-width="1" stroke-dasharray="3 4" rx="4"/>`);
+
+  const traySlotW = (ROOM_W * SCALE) / categories.length;
+  categories.forEach((cat, i) => {
+    const pos = state.positions[cat.id];
+    if (pos) return;
+    const prod = productById(cat.id, state.picks[cat.id]);
+    const cx = MARGIN + traySlotW * (i + 0.5);
+    const cy = TRAY_TOP + 40;
+    const boxSize = 36;
+    const bx = cx - boxSize/2, by = cy - boxSize/2;
+    parts.push(`<g class="drag-item" data-cat="${cat.id}" style="cursor:grab;touch-action:none;">`);
+    parts.push(furnitureShape(cat.id, bx, by, boxSize, boxSize, prod.color));
+    parts.push(`</g>`);
+    parts.push(`<text x="${cx}" y="${TRAY_TOP + 78}" fill="var(--ink-soft)" font-size="11" font-weight="500" text-anchor="middle" font-family="Inter, sans-serif">${escapeHtml(cat.label)}</text>`);
+  });
+
+  const svg = document.getElementById('planSvg');
+  if (svg) {
+    svg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+    svg.innerHTML = parts.join('');
+  }
+}
+
+/* ================= Drag interaction ================= */
+let dragState = null; // { catId, offX, offY } offsets in feet
+
+function svgPoint(evt){
+  const svg = document.getElementById('planSvg');
+  const pt = svg.createSVGPoint();
+  pt.x = evt.clientX;
+  pt.y = evt.clientY;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return { xFt: 0, yFt: 0, rawY: 0 };
+  const loc = pt.matrixTransform(ctm.inverse());
+  return { xFt: (loc.x - MARGIN) / SCALE, yFt: (loc.y - MARGIN) / SCALE, rawY: loc.y };
+}
+
+function setupDrag(){
+  const svg = document.getElementById('planSvg');
+  if (!svg || svg.dataset.dragBound) return;
+  svg.dataset.dragBound = '1';
+
+  svg.addEventListener('pointerdown', (e) => {
+    const rotHandle = e.target.closest('.rotate-handle');
+    if (rotHandle) {
+      const catId = rotHandle.dataset.cat;
+      const cat = categories.find(c => c.id === catId);
+      state.rotations[catId] = ((state.rotations[catId] || 0) + 90) % 360;
+      const pos = state.positions[catId];
+      if (pos) {
+        const bbox = bboxFor(cat, state.rotations[catId]);
+        pos.x = Math.max(0, Math.min(ROOM_W - bbox.bw, pos.x));
+        pos.y = Math.max(0, Math.min(ROOM_D - bbox.bh, pos.y));
+      }
+      renderPlanSvg();
+      e.stopPropagation();
+      e.preventDefault();
       return;
     }
-    if(!dragging) return;
-    const dx = e.clientX - lastX, dy = e.clientY - lastY;
-    lastX = e.clientX; lastY = e.clientY;
-    if(panning){
-      const panScale = Math.max(camDist, PAN_MIN_DIST) * 0.0018;
-      const right = new THREE.Vector3(Math.cos(camAzimuth), 0, -Math.sin(camAzimuth));
-      // Camera-relative "up" (NOT world Y) — derived from camera.lookAt()'s own math with
-      // up=(0,1,0): the component of world-up perpendicular to the view direction, for this
-      // spherical parametrization. At elevation=0 this reduces to plain world-up (0,1,0), so
-      // horizontal-camera panning is unchanged; at higher elevation (e.g. Plan View) it
-      // correctly becomes a horizontal ground-plane direction instead of straight up. Raw
-      // world-Y panning would move camTarget.y by over 100 units from a typical drag at normal
-      // zoom — the camera rocketing into the sky reads as "feels like zooming," not panning.
-      const up = new THREE.Vector3(
-        -Math.sin(camElevation) * Math.sin(camAzimuth),
-        Math.cos(camElevation),
-        -Math.sin(camElevation) * Math.cos(camAzimuth)
-      );
-      camTarget.addScaledVector(right, -dx*panScale);
-      camTarget.addScaledVector(up, dy*panScale);
+    const g = e.target.closest('.drag-item');
+    if (!g) return;
+    const catId = g.dataset.cat;
+    const cat = categories.find(c => c.id === catId);
+    const pos = state.positions[catId];
+    const p = svgPoint(e);
+    let originX, originY;
+    if (pos) {
+      originX = pos.x; originY = pos.y;
     } else {
-      camAzimuth -= dx * 0.006;
-      camElevation = Math.max(0.08, Math.min(1.5, camElevation + dy * 0.006));
+      const bbox = bboxFor(cat, state.rotations[catId] || 0);
+      originX = p.xFt - bbox.bw / 2;
+      originY = p.yFt - bbox.bh / 2;
     }
-    updateCameraPosition();
-  });
-  function releasePointer(e){
-    activePointers.delete(e.pointerId);
-    if(activePointers.size < 2) pinchStartDist = null;
-    dragging = activePointers.size === 1;
-  }
-  window.addEventListener('pointerup', releasePointer);
-  window.addEventListener('pointercancel', releasePointer);
-  dom.addEventListener('wheel', (e)=>{
+    dragState = { catId, offX: p.xFt - originX, offY: p.yFt - originY };
+    svg.setPointerCapture(e.pointerId);
     e.preventDefault();
-    cancelTween();
-    camDist = clampZoomIn(Math.max(MIN_CAM_DIST, Math.min(MAX_CAM_DIST, camDist * (1 + e.deltaY*0.0012))));
-    updateCameraPosition();
-    updateLOD();
-  }, {passive:false});
-  dom.addEventListener('contextmenu', (e)=>e.preventDefault());
-}
-
-function animate(now){
-  requestAnimationFrame(animate);
-  if(stepCameraTween(now || performance.now())){
-    updateCameraPosition();
-    updateLOD();
-  }
-  updateCompass();
-  renderer.render(scene, camera);
-}
-
-/* ================= LOD ================= */
-function camDistToTarget(){ return camera.position.distanceTo(camTarget); }
-function updateLOD(){
-  const d = camDistToTarget();
-  const near = d < NEAR_MAX_DIST;
-  const mid = !near && d < MID_MAX_DIST;
-  // Near/mid detail meshes are no longer built eagerly in buildBoroughMeshes (see the comment
-  // there) — build them here instead, once, the first time the camera actually crosses into a
-  // distance that needs them. buildDetailMeshes() is itself chunked/async now (see there), so
-  // detailMeshesBuilt only flips true once it actually finishes — detailBuildInProgress is what
-  // stops this from re-triggering a second concurrent build on every camera-move frame while
-  // the first one is still in flight.
-  if((near || mid) && !detailMeshesBuilt && !detailBuildInProgress && pendingDetailRecords){
-    buildDetailMeshes(pendingDetailRecords);
-  }
-  nearGroup.visible = near;
-  midGroup.visible = mid;
-  farGroup.visible = !near && !mid;
-  labelGroup.visible = !near; // borough names are wayfinding context, not useful once you're in close on individual buildings
-  document.getElementById('statusBar').textContent =
-    `${currentRecords.length} lots · LOD: ${near?'near (full massing)':mid?'mid (block)':'far (dot)'} · dist ${d.toFixed(0)}`;
-}
-
-/* ================= Massing builder ================= */
-// Materials are shared/cached rather than created per building: this dataset only ever uses
-// ~11 distinct land-use colors plus a couple of vacant/synthetic variants, so a small cache
-// keyed by the material's actual parameters avoids allocating and compiling a new material for
-// every one of ~15,000+ buildings. Reused across all three mesh builders below.
-const materialCache = new Map();
-function getSharedMaterial(key, factory){
-  let mat = materialCache.get(key);
-  if(!mat){ mat = factory(); materialCache.set(key, mat); }
-  return mat;
-}
-const FLOOR_LINE_MATERIAL = new THREE.LineBasicMaterial({color:0x000000, transparent:true, opacity:0.12});
-
-function buildBoroughMeshes(records){
-  // Geometry is unique per building (real footprint shapes), so it's disposed on every clear.
-  // Materials are NOT disposed here — they're shared/cached by color in materialCache (above)
-  // and meant to live for the app's lifetime, reused across every borough/neighborhood switch.
-  // Disposing them here would break every other mesh still referencing the same cached instance.
-  [nearGroup, midGroup, farGroup, envelopeGroup].forEach(g=>{
-    g.children.forEach(c=>{ if(c.geometry) c.geometry.dispose(); });
-    g.clear();
   });
-  farPointRecords = [];
 
-  // Only runs the (memoized) point-in-polygon assignment when it's actually needed — switching
-  // borough/neighborhood while in a different color mode never pays this cost
-  if(colorMode === 'neighborhood') assignNeighborhoods(records);
+  svg.addEventListener('pointermove', (e) => {
+    if (!dragState) return;
+    const cat = categories.find(c => c.id === dragState.catId);
+    const bbox = bboxFor(cat, state.rotations[dragState.catId] || 0);
+    const p = svgPoint(e);
+    let nx = p.xFt - dragState.offX;
+    let ny = p.yFt - dragState.offY;
+    nx = Math.max(0, Math.min(ROOM_W - bbox.bw, nx));
+    state.positions[dragState.catId] = { x: nx, y: ny };
+    renderPlanSvg();
+  });
 
-  // Only the far tier (cheap: one shared BufferGeometry via buildFarPoints, no per-lot mesh or
-  // material) is built here. The near-LOD (extruded geometry + floor lines) and mid-LOD
-  // (oriented block box) meshes are far more expensive per building, and the app boots at the
-  // far/dot LOD where they'd be built and immediately hidden by updateLOD() — so that
-  // construction is deferred to buildDetailMeshes(), triggered lazily the first time updateLOD()
-  // finds the camera has actually zoomed into mid or near range (see there). Nothing is capped
-  // or skipped permanently; every record still gets full detail, just only once it can be seen.
-  pendingDetailRecords = records;
-  detailMeshesBuilt = false;
-  detailBuildInProgress = false; // the flag itself resets immediately; any actual in-flight
-                                  // closure still checks its captured generation (bumped next)
-                                  // and bails on its own next batch rather than being torn down
-  detailBuildGeneration++;
-
-  const farPositions = [], farColors = [], farSizes = [];
-  for(const rec of records){
-    const lot = rec.lot;
-    if(hiddenCategories.has(categoryForLot(rec))) continue;
-    const color = colorForLot(rec, colorMode);
-    const hasFootprints = rec.footprints && rec.footprints.length > 0;
-    if(hasFootprints){
-      for(const fp of rec.footprints){
-        const ring = outerRingWorld(fp.the_geom);
-        if(!ring || ring.length < 3) continue;
-        const heightFt = Number(fp.height_roof) || estimateHeightFt(lot);
-        pushFarPoint(ring, heightFt, color, farPositions, farColors, farSizes, rec);
-      }
+  function endDrag(e){
+    if (!dragState) return;
+    const catId = dragState.catId;
+    const cat = categories.find(c => c.id === catId);
+    const bbox = bboxFor(cat, state.rotations[catId] || 0);
+    const p = svgPoint(e);
+    if (p.rawY >= TRAY_TOP - 12) {
+      state.positions[catId] = null;
+      state.rotations[catId] = 0; // reset orientation when it goes back to the tray
     } else {
-      const ring = syntheticLotRing(lot);
-      if(ring) pushFarPoint(ring, 2, 0x9C9587, farPositions, farColors, farSizes, rec);
+      const pos = state.positions[catId];
+      let nx = Math.max(0, Math.min(ROOM_W - bbox.bw, pos.x));
+      let ny = Math.max(0, Math.min(ROOM_D - bbox.bh, pos.y));
+      nx = Math.round(nx * 4) / 4;
+      ny = Math.round(ny * 4) / 4;
+      state.positions[catId] = { x: nx, y: ny };
     }
+    dragState = null;
+    renderPlanSvg();
+    renderPanel();
   }
-  buildFarPoints(farPositions, farColors, farSizes);
-  updateLOD();
+
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', () => { dragState = null; });
 }
 
-let pendingDetailRecords = null, detailMeshesBuilt = false, detailBuildInProgress = false, detailBuildGeneration = 0;
-function buildDetailMeshes(records){
-  // Extruding a real footprint into full 3D geometry (near-LOD) is genuinely expensive per
-  // building — profiling on a 15,000-lot Manhattan load found ~22s in ExtrudeGeometry
-  // construction alone, ~5s in floor lines, ~3s in the mid-tier oriented box, all as ONE
-  // synchronous call. That doesn't just feel slow, it freezes the tab and the render loop with
-  // it for the whole duration — the browser can't paint or respond to input until it returns.
-  // Chunked instead: each batch does a time-boxed slice of the work (not a fixed record count,
-  // since per-building cost varies with footprint complexity), then yields via setTimeout so the
-  // existing requestAnimationFrame render loop gets a turn — buildings appear progressively
-  // instead of the tab going unresponsive for the whole duration. Total compute time is
-  // essentially unchanged; what changes is that the browser stays alive and visibly making
-  // progress throughout it.
-  // detailBuildGeneration guards against a borough/neighborhood switch (or a showEnvelope/color
-  // mode toggle, both of which also call buildBoroughMeshes) landing WHILE a previous chunked
-  // build is still mid-flight: buildBoroughMeshes bumps the generation counter on every call, so
-  // an in-flight batch here checks its own captured generation against the current one and
-  // aborts silently the moment it's superseded, rather than continuing to add meshes for records
-  // that already got cleared out from under it.
-  const myGeneration = detailBuildGeneration;
-  detailBuildInProgress = true;
-  let index = 0;
-  document.getElementById('loadOverlay').classList.remove('hidden');
-
-  function processBatch(){
-    if(myGeneration !== detailBuildGeneration) return; // superseded — a newer load has since started
-    const batchStart = performance.now();
-    while(index < records.length && performance.now() - batchStart < 40){
-      const rec = records[index++];
-      const lot = rec.lot;
-      if(hiddenCategories.has(categoryForLot(rec))) continue;
-      const color = colorForLot(rec, colorMode);
-      const hasFootprints = rec.footprints && rec.footprints.length > 0;
-      if(hasFootprints){
-        for(const fp of rec.footprints){
-          const ring = outerRingWorld(fp.the_geom);
-          if(!ring || ring.length < 3) continue;
-          const heightFt = Number(fp.height_roof) || estimateHeightFt(lot);
-          addNearMesh(ring, heightFt, color, lot);
-          addMidMesh(ring, heightFt, color);
-        }
-      } else {
-        const ring = syntheticLotRing(lot);
-        if(ring){
-          addNearMesh(ring, 2, 0x9C9587, lot, true);
-          addMidMesh(ring, 2, 0x9C9587);
-        }
-      }
-      if(showEnvelope) addEnvelopeMesh(rec);
-    }
-    document.getElementById('loadMsg').textContent =
-      `Building full massing… ${index.toLocaleString()} / ${records.length.toLocaleString()}`;
-    if(index < records.length){
-      setTimeout(processBatch, 0);
-    } else {
-      detailMeshesBuilt = true;
-      detailBuildInProgress = false;
-      document.getElementById('loadOverlay').classList.add('hidden');
-    }
-  }
-  processBatch();
-}
-
-function syntheticLotRing(lot){
-  const lat = Number(lot.latitude), lon = Number(lot.longitude), areaFt = Number(lot.lotarea);
-  if(!lat || !lon || !areaFt || areaFt <= 0) return null;
-  const [cx, cz] = projectLonLat(lon, lat);
-  const sideWorld = ftToWorld(Math.sqrt(areaFt));
-  const h = sideWorld/2;
-  return [[cx-h,cz-h],[cx+h,cz-h],[cx+h,cz+h],[cx-h,cz+h]];
-}
-
-function estimateHeightFt(lot){
-  const floors = Number(lot.numfloors) || 1;
-  return floors * 11; // fallback only — real height_roof from Building Footprints is used whenever present
-}
-
-// IMPORTANT: rotateX(-pi/2), applied after building geometry from this shape, maps a local
-// (x, y, 0) vertex to world (x, 0, -y). Without the negation below, every near/mid-tier
-// building and the FAR-derived envelope render exactly z-mirrored relative to the far-tier dots
-// and everything else that projects (x,z) directly. Negating z here cancels that flip so the
-// two rotation stages net out to the identity on Z, matching the rest of the scene's convention.
-function ringToShape(ring){
-  const shape = new THREE.Shape();
-  ring.forEach(([x,z], i)=>{ if(i===0) shape.moveTo(x,-z); else shape.lineTo(x,-z); });
-  return shape;
-}
-function ringArea(ring){
-  let a = 0;
-  for(let i=0;i<ring.length;i++){
-    const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
-    a += x1*z2 - x2*z1;
-  }
-  return Math.abs(a/2) * FEET_PER_WORLD_UNIT * FEET_PER_WORLD_UNIT; // back to sq ft
-}
-
-function addNearMesh(ring, heightFt, color, lot, isVacant=false){
-  const shape = ringToShape(ring);
-  const depth = ftToWorld(heightFt);
-  const geo = new THREE.ExtrudeGeometry(shape, {depth, bevelEnabled:false, steps:1});
-  geo.rotateX(-Math.PI/2);
-  // DoubleSide backstop — clampZoomIn() is the real fix (keeps the camera from
-  // crossing the surface at all), but rendering both faces means a grazing pass or an edge
-  // case the raycast misses still shows a color instead of collapsing to pure black.
-  // Shared/cached by its actual params instead of `new`d per building — see materialCache.
-  const matKey = `near:${color}:${isVacant}`;
-  const mat = getSharedMaterial(matKey, () => new THREE.MeshLambertMaterial({color, transparent:isVacant, opacity:isVacant?0.35:1, side: THREE.DoubleSide}));
-  const mesh = new THREE.Mesh(geo, mat);
-  nearGroup.add(mesh);
-
-  if(!isVacant){
-    const floors = Math.max(1, Math.round(Number(lot.numfloors) || heightFt/11));
-    addFloorLines(ring, heightFt, floors);
-  }
-}
-
-function addFloorLines(ring, heightFt, floors){
-  const floorH = ftToWorld(heightFt) / floors;
-  const pts = [];
-  for(let f=1; f<floors; f++){
-    const y = f * floorH;
-    for(let i=0;i<ring.length;i++){
-      const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
-      pts.push(x1,y,z1, x2,y,z2);
-    }
-  }
-  if(!pts.length) return;
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-  geo.computeBoundingSphere(); // BufferGeometry built by hand needs this explicitly — see buildFarPoints
-  // Floor-line material is always the exact same color/opacity across every building, so one
-  // shared module-level instance (FLOOR_LINE_MATERIAL, above) replaces what would otherwise be
-  // a separate material allocation per building.
-  nearGroup.add(new THREE.LineSegments(geo, FLOOR_LINE_MATERIAL));
-}
-
-function addMidMesh(ring, heightFt, color){
-  // Real Manhattan buildings sit at the grid's ~29-degree tilt from true north (the
-  // well-documented true rotation of the post-1811 grid), not aligned to world X/Z — so a
-  // world-axis-aligned bounding box (min/max X,Z) around a rotated rectangle is always bigger
-  // than the rectangle itself. For a typical 25x100ft rowhouse lot rotated 29 degrees, the AABB
-  // balloons to 70x100ft — the box's short dimension alone (70ft) very nearly spans NYC's
-  // standard 60ft side-street width, so buildings on opposite sides of a real street would have
-  // overlapping boxes, fusing whole blocks into one mass with the streets erased. Uses an
-  // ORIENTED bounding box instead: find the ring's longest edge (real footprints are
-  // overwhelmingly rectangular, so this recovers the building's true orientation), measure a
-  // tight width/depth in that edge's own frame, then rotate the mesh back by the same angle —
-  // the box's corners then match the real rotated footprint's corners exactly, instead of
-  // ballooning past them.
-  let angle = 0, maxLen = 0;
-  for(let i=0;i<ring.length;i++){
-    const [x1,z1] = ring[i], [x2,z2] = ring[(i+1)%ring.length];
-    const len = Math.hypot(x2-x1, z2-z1);
-    if(len > maxLen){ maxLen = len; angle = Math.atan2(z2-z1, x2-x1); }
-  }
-  const cosN = Math.cos(-angle), sinN = Math.sin(-angle);
-  let minU=Infinity,maxU=-Infinity,minV=Infinity,maxV=-Infinity;
-  for(const [x,z] of ring){
-    const u = x*cosN - z*sinN, v = x*sinN + z*cosN;
-    minU=Math.min(minU,u); maxU=Math.max(maxU,u); minV=Math.min(minV,v); maxV=Math.max(maxV,v);
-  }
-  const w = Math.max(0.02, maxU-minU), d = Math.max(0.02, maxV-minV), h = ftToWorld(heightFt);
-  const geo = new THREE.BoxGeometry(w, h, d);
-  // Shared/cached by color instead of `new`d per building — see materialCache above.
-  const mat = getSharedMaterial(`mid:${color}`, () => new THREE.MeshLambertMaterial({color, side: THREE.DoubleSide}));
-  const mesh = new THREE.Mesh(geo, mat);
-  const cu = (minU+maxU)/2, cv = (minV+maxV)/2;
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  mesh.position.set(cu*cosA - cv*sinA, h/2, cu*sinA + cv*cosA);
-  mesh.rotation.y = -angle; // matches THREE's rotation.y sign convention — verified analytically, see above
-  midGroup.add(mesh);
-}
-
-function pushFarPoint(ring, heightFt, color, positions, colors, sizes, rec){
-  let cx=0, cz=0;
-  ring.forEach(([x,z])=>{ cx+=x; cz+=z; });
-  cx/=ring.length; cz/=ring.length;
-  positions.push(cx, ftToWorld(heightFt)*0.5, cz);
-  const c = new THREE.Color(color);
-  colors.push(c.r, c.g, c.b);
-  sizes.push(Math.max(1.5, Math.sqrt(ringArea(ring))/20));
-  farPointRecords.push(rec);
-}
-function buildFarPoints(positions, colors, sizes){
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geo.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
-  // Unlike THREE's built-in geometry classes (BoxGeometry, ExtrudeGeometry, ShapeGeometry —
-  // which compute their own bounds automatically), a BufferGeometry assembled by hand via
-  // setAttribute does NOT get a bounding sphere for free. Without one, frustumCulled (true by
-  // default on Points) silently culls the entire object every frame, rendering nothing.
-  geo.computeBoundingSphere();
-  geo.computeBoundingBox();
-  const mat = new THREE.PointsMaterial({size:3, vertexColors:true, sizeAttenuation:true});
-  farPoints = new THREE.Points(geo, mat);
-  farGroup.add(farPoints);
-}
-
-/* ---- FAR-derived zoning envelope (Option A from the scoping pass — see project notes) ---- */
-function addEnvelopeMesh(rec){
-  const lot = rec.lot;
-  const maxFar = maxAllowedFar(lot);
-  const lotAreaFt = Number(lot.lotarea) || 0;
-  if(maxFar <= 0 || lotAreaFt <= 0) return;
-  const maxBuildableAreaFt = lotAreaFt * maxFar;
-
-  const ring = (rec.footprints && rec.footprints[0]) ? outerRingWorld(rec.footprints[0].the_geom) : syntheticLotRing(lot);
-  if(!ring || ring.length < 3) return;
-  const footprintAreaFt = ringArea(ring) || lotAreaFt;
-  const envelopeHeightFt = maxBuildableAreaFt / footprintAreaFt;
-
-  const util = farUtilization(lot);
-  const color = util === null ? 0x1F4E79 : (util >= 0.95 ? 0x3E7A4C : util < 0.5 ? 0xB23A2E : 0xC8932A);
-
-  const shape = ringToShape(ring);
-  const geo = new THREE.ExtrudeGeometry(shape, {depth: ftToWorld(envelopeHeightFt), bevelEnabled:false, steps:1});
-  geo.rotateX(-Math.PI/2);
-  // Shared/cached — only 4 distinct colors possible here (util===null, >=0.95, <0.5, else)
-  const mat = getSharedMaterial(`envelope:${color}`, () => new THREE.MeshBasicMaterial({color, wireframe:true, transparent:true, opacity:0.35}));
-  envelopeGroup.add(new THREE.Mesh(geo, mat));
-}
-
-function categoryForLot(rec){
-  const lot = rec.lot;
-  if(colorMode === 'landuse') return luCode(lot) || '?';
-  if(colorMode === 'year') return yearEraKey(lot);
-  if(colorMode === 'far') return farBucketKey(lot);
-  if(colorMode === 'neighborhood') return rec.nta2020 || 'unmatched';
-  return '?';
-}
-
-/* ================= Click to inspect ================= */
-function wireClickToInspect(){
-  const raycaster = new THREE.Raycaster();
-  const mouse = new THREE.Vector2();
-  renderer.domElement.addEventListener('click', (e)=>{
-    mouse.x = (e.clientX/window.innerWidth)*2 - 1;
-    mouse.y = -(e.clientY/window.innerHeight)*2 + 1;
-    raycaster.setFromCamera(mouse, camera);
-    const activeGroup = nearGroup.visible ? nearGroup : midGroup.visible ? midGroup : null;
-    if(activeGroup){
-      const hits = raycaster.intersectObjects(activeGroup.children);
-      if(hits.length){ showInspectFromWorldPoint(hits[0].point); return; }
-    }
-    if(farGroup.visible && farPoints){
-      const hits = raycaster.intersectObject(farPoints, false);
-      if(hits.length && hits[0].index != null){
-        showInspectRecord(farPointRecords[hits[0].index]); return;
-      }
-    }
-  });
-}
-function showInspectFromWorldPoint(point){
-  // nearest-record lookup by projected centroid — good enough for near/mid tiers where lots are sparse on screen
-  let best = null, bestDist = Infinity;
-  for(const rec of currentRecords){
-    const lot = rec.lot;
-    if(!lot.latitude || !lot.longitude) continue;
-    const [x,z] = projectLonLat(Number(lot.longitude), Number(lot.latitude));
-    const dist = (x-point.x)**2 + (z-point.z)**2;
-    if(dist < bestDist){ bestDist = dist; best = rec; }
-  }
-  if(best) showInspectRecord(best);
-}
-function showInspectRecord(rec){
-  if(!rec) return;
-  const lot = rec.lot;
-  document.getElementById('inspectPanel').style.display = 'block';
-  document.getElementById('inspectAddr').textContent = lot.address || `BBL ${lot.bbl}`;
-  document.getElementById('inspectBBL').textContent = lot.bbl || '—';
-  document.getElementById('inspectLandUse').textContent = LANDUSE_LABELS[luCode(lot)] || lot.landuse || '—';
-  document.getElementById('inspectYear').textContent = lot.yearbuilt || '—';
-  const fp = rec.footprints && rec.footprints[0];
-  document.getElementById('inspectHeight').textContent = fp && fp.height_roof ? `${Math.round(fp.height_roof)} ft (real)` : (lot.numfloors ? `~${Math.round(estimateHeightFt(lot))} ft (est.)` : '—');
-  document.getElementById('inspectFloors').textContent = lot.numfloors || '—';
-  document.getElementById('inspectLotArea').textContent = lot.lotarea ? `${Number(lot.lotarea).toLocaleString()} sf` : '—';
-  document.getElementById('inspectBuiltFar').textContent = lot.builtfar || '—';
-  const maxFar = maxAllowedFar(lot);
-  document.getElementById('inspectMaxFar').textContent = maxFar ? maxFar.toFixed(2) : '—';
-  const util = farUtilization(lot);
-  document.getElementById('farBarFill').style.width = util === null ? '0%' : `${Math.min(115, util*100)}%`;
-}
-
-/* ================= Nav controls: compass, recenter, zoom buttons ================= */
-// Cosmetic approximation, consistent with the app's existing note that its projection isn't
-// true State Plane — the needle rotates with camAzimuth so it reads as "which way you're
-// facing" rather than a surveyed bearing. Click resets to north-up (azimuth 0).
-function updateCompass(){
-  const needle = document.getElementById('compassNeedle');
-  if(needle) needle.style.transform = `rotate(${-camAzimuth * 180/Math.PI}deg)`;
-}
-document.getElementById('compassDial').addEventListener('click', resetToNorth);
-document.getElementById('recenterBtn').addEventListener('click', recenterView);
-document.getElementById('planViewBtn').addEventListener('click', togglePlanView);
-document.getElementById('zoomInBtn').addEventListener('click', ()=>{
-  camTween = null;
-  camDist = clampZoomIn(Math.max(MIN_CAM_DIST, camDist * 0.72));
-  updateCameraPosition(); updateLOD();
-});
-document.getElementById('zoomOutBtn').addEventListener('click', ()=>{
-  camTween = null;
-  camDist = Math.min(MAX_CAM_DIST, camDist * 1.38);
-  updateCameraPosition(); updateLOD();
-});
-
-/* ================= Help modal ================= */
-function openHelp(){ document.getElementById('helpOverlay').classList.remove('hidden'); }
-function closeHelp(){ document.getElementById('helpOverlay').classList.add('hidden'); }
-document.getElementById('helpBtn').addEventListener('click', openHelp);
-document.getElementById('helpCloseBtn').addEventListener('click', closeHelp);
-document.getElementById('helpOverlay').addEventListener('click', (e)=>{
-  if(e.target.id === 'helpOverlay') closeHelp();
-});
-window.addEventListener('keydown', (e)=>{
-  if(e.key === 'Escape') closeHelp();
-});
-
-/* ================= UI wiring ================= */
-function legendItemsFor(mode){
-  if(mode === 'landuse') return Object.entries(LANDUSE_LABELS).map(([code,label])=>(
-    {key:code, label, swatch:colorForLandUse(code)}));
-  if(mode === 'far') return FAR_BUCKETS.map(b=>({key:b.key, label:b.label, swatch:b.swatch}));
-  if(mode === 'year') return YEAR_ERAS.map(e=>({key:e.key, label:e.label, swatch:yearEraSwatch(e.key)}));
-  if(mode === 'neighborhood'){
-    // dynamic, unlike the three fixed-category modes above — 262 citywide neighborhoods would
-    // be an unusable legend, so this lists only the ones actually present in what's loaded
-    // right now (a handful for a single neighborhood search, tens for a whole borough)
-    const seen = new Map(); // nta2020 -> {label, swatch}
-    let hasUnmatched = false;
-    for(const rec of currentRecords){
-      if(rec.nta2020 === undefined) continue; // buildBoroughMeshes hasn't assigned it yet
-      if(rec.nta2020 === null){ hasUnmatched = true; continue; }
-      if(!seen.has(rec.nta2020)){
-        const entry = ntaGeomCache[rec.nta2020];
-        seen.set(rec.nta2020, {label: entry ? entry.ntaname : rec.nta2020, swatch: colorForNeighborhood(rec.nta2020)});
-      }
-    }
-    const items = [...seen.entries()].map(([code,v]) => ({key:code, label:v.label, swatch:v.swatch}))
-      .sort((a,b) => a.label.localeCompare(b.label));
-    if(hasUnmatched) items.push({key:'unmatched', label:'Unmatched', swatch:0x9C9587});
-    return items;
-  }
-  return [];
-}
-function updateLegend(){
-  const list = document.getElementById('legendList');
-  const title = document.getElementById('legendTitle');
-  const titles = {landuse:'Land Use', far:'FAR Utilization', year:'Year Built', neighborhood:'Neighborhood'};
-  title.textContent = titles[colorMode] || '';
-  const items = legendItemsFor(colorMode);
-  list.innerHTML = '';
-
-  const actions = document.createElement('div');
-  actions.className = 'legendActions';
-  const allOff = items.every(it => hiddenCategories.has(it.key));
-  const link = document.createElement('button');
-  link.className = 'legendLink';
-  link.textContent = allOff ? 'Show all' : 'Hide all';
-  link.onclick = ()=>{
-    if(allOff) items.forEach(it => hiddenCategories.delete(it.key));
-    else items.forEach(it => hiddenCategories.add(it.key));
-    buildBoroughMeshes(currentRecords);
-    updateLegend();
-  };
-  actions.appendChild(link);
-  list.appendChild(actions);
-
-  items.forEach(({key, label, swatch})=>{
-    const off = hiddenCategories.has(key);
-    const btn = document.createElement('button');
-    btn.className = `legend-item${off?' off':''}`;
-    btn.innerHTML = `<span class="legendCheck"></span><span class="swatch" style="background:#${swatch.toString(16).padStart(6,'0')}"></span>${escapeHtml(label)}`;
-    btn.onclick = ()=>{ off ? hiddenCategories.delete(key) : hiddenCategories.add(key); buildBoroughMeshes(currentRecords); updateLegend(); };
-    list.appendChild(btn);
-  });
-
-  if(colorMode === 'far'){
-    const note = document.createElement('div');
-    note.className = 'legendNote';
-    note.textContent = 'Built FAR ÷ max allowed FAR (residential/commercial/community-facility, whichever is greatest).';
-    list.appendChild(note);
-  } else if(colorMode === 'year'){
-    const note = document.createElement('div');
-    note.className = 'legendNote';
-    note.textContent = 'Color still reads as a continuous gradient on the buildings — these bins are for filtering, not a hard color cutoff.';
-    list.appendChild(note);
-  } else if(colorMode === 'neighborhood'){
-    const note = document.createElement('div');
-    note.className = 'legendNote';
-    note.textContent = 'Colors are assigned per neighborhood by name, not a meaningful scale — only useful for telling adjacent areas apart.';
-    list.appendChild(note);
-  }
-}
-
-async function selectBorough(boroDigit){
-  document.getElementById('loadOverlay').classList.remove('hidden');
-  document.getElementById('inspectPanel').style.display = 'none';
-  try{
-    const records = await loadBoroughData(boroDigit);
-    currentRecords = records;
-    currentBoroDigit = boroDigit;
-    buildBoroughMeshes(records);
-    // Only the Neighborhood color mode's legend is actually data-dependent (the other
-    // three list fixed categories regardless of what's loaded), so this was invisible everywhere
-    // except Neighborhood mode — but there, switching boroughs left the legend showing whatever
-    // the PREVIOUS borough/neighborhood had, even though the massing itself was already correct.
-    updateLegend();
-    toast(`${BORO_CODE_TO_LETTER[boroDigit]}: ${records.length} lots rendered`);
-  }catch(err){
-    console.error(err);
-    if(err.status === 403){
-      toast('NYC Open Data blocked this request — it rejects requests with no page origin, which is what a file:// page sends. Deploy to Netlify (or any real host) and try again there.');
-    }else{
-      toast(`Could not load borough data — ${err.message}`);
-    }
-    document.getElementById('statusBar').textContent = `Load failed: ${err.message}`;
-  }finally{
-    document.getElementById('loadOverlay').classList.add('hidden');
-  }
-}
-
-// Loads exactly one named neighborhood — see the fetch functions above for why this
-// sidesteps the borough-wide truncation problem instead of just reducing it.
-async function selectNeighborhood(nta){
-  document.getElementById('loadOverlay').classList.remove('hidden');
-  document.getElementById('inspectPanel').style.display = 'none';
-  try{
-    document.getElementById('loadMsg').textContent = `Fetching ${nta.ntaname} boundary…`;
-    const geom = await fetchNtaGeometry(nta.nta2020);
-    if(!geom) throw new Error('no boundary geometry returned for this neighborhood');
-    const rings = allOuterRingsWorld(geom); // same GeoJSON→world-ring pipeline as the borough outlines
-    const bbox = lonLatBBoxOfGeom(geom);
-
-    const boroDigit = BORONAME_TO_DIGIT[nta.boroname];
-    const boroLetter = BORO_CODE_TO_LETTER[boroDigit];
-    document.getElementById('loadMsg').textContent = `Fetching ${nta.ntaname} tax lots…`;
-    const bboxRows = await fetchPlutoInBBox(boroLetter, bbox);
-    // bbox is a rectangle, the neighborhood isn't — trim to the real polygon so an adjacent
-    // neighborhood's edge lots don't bleed into this view
-    const inside = bboxRows.filter(lot => {
-      if(!lot.latitude || !lot.longitude) return false;
-      const [x,z] = projectLonLat(Number(lot.longitude), Number(lot.latitude));
-      return pointInRings(x, z, rings);
+/* ================= Panel ================= */
+function renderRoomTabs(){
+  const el = document.getElementById('roomTabs');
+  if (!el) return;
+  el.innerHTML = roomPlans.map(p =>
+    `<button data-r="${escapeAttr(p.id)}" class="${p.id === state.roomPlan ? 'active' : ''}">${escapeHtml(p.label)}</button>`
+  ).join('');
+  el.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.r === state.roomPlan) return;
+      const hadPlacedItems = placedCategories().length > 0;
+      state.roomPlan = btn.dataset.r;
+      applyRoomPlan(roomPlans.find(p => p.id === state.roomPlan));
+      categories.forEach(c => {
+        state.positions[c.id] = null;
+        state.rotations[c.id] = 0;
+      });
+      renderRoomTabs();
+      renderPlanSvg();
+      renderPanel();
+      renderPlanCaption();
+      if (hadPlacedItems) toast('Switched room plan — room cleared');
     });
+  });
+}
 
-    document.getElementById('loadMsg').textContent = `Fetching ${nta.ntaname} building footprints…`;
-    const bbls = inside.map(lot => canonBBL(lot.bbl));
-    const footprintRows = await fetchFootprintsForBBLs(bbls);
-    const footprintsByBBL = {};
-    for(const fp of footprintRows){
-      if(!fp.mappluto_bbl) continue;
-      const key = canonBBL(fp.mappluto_bbl);
-      (footprintsByBBL[key] = footprintsByBBL[key] || []).push(fp);
+function renderPlanCaption(){
+  const el = document.getElementById('planCaption');
+  if (!el) return;
+  const plan = roomPlans.find(p => p.id === state.roomPlan);
+  el.innerHTML = `<span>${escapeHtml(plan.label)} — ${plan.w}' × ${plan.d}'</span><span>Scale 1 sq = 1 ft</span>`;
+}
+
+function renderTabs(){
+  const el = document.getElementById('paletteTabs');
+  if (!el) return;
+  el.innerHTML = palettes.map(p =>
+    `<button data-p="${escapeAttr(p.id)}" class="${p.id === state.palette ? 'active' : ''}">${escapeHtml(p.label)}</button>`
+  ).join('');
+  el.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.palette = btn.dataset.p;
+      categories.forEach(c => {
+        state.picks[c.id] = products[c.id].find(p => p.palette === state.palette).id;
+      });
+      renderPlanSvg();
+      renderPanel();
+      renderTabs();
+    });
+  });
+}
+
+function renderPanel(){
+  const el = document.getElementById('panel');
+  if (!el) return;
+  let html = categories.map(cat => {
+    const placed = !!state.positions[cat.id];
+    const swatches = products[cat.id].map(p => `
+      <button class="swatch ${state.picks[cat.id] === p.id ? 'selected' : ''}" data-cat="${escapeAttr(cat.id)}" data-prod="${escapeAttr(p.id)}">
+        <span class="swatch-chip" style="background:${p.color}"></span>
+        <span class="swatch-label">
+          <span class="name">${escapeHtml(p.name)}</span>
+          <span class="price">$${p.price}</span>
+        </span>
+      </button>
+    `).join('');
+    const picked = productById(cat.id, state.picks[cat.id]);
+    return `
+      <div class="cat-card ${placed ? '' : 'unplaced'}">
+        <div class="cat-head">
+          <h3>${escapeHtml(cat.label)}</h3>
+          <span class="price">${placed ? `$${picked.price}` : 'Not in room'}</span>
+        </div>
+        <div class="swatch-row">${swatches}</div>
+      </div>
+    `;
+  }).join('');
+
+  html += `
+    <div class="summary">
+      <div class="summary-total">
+        <span>Room total</span>
+        <span class="amount">$${total()}</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn" id="genBtn">Generate look</button>
+        <button class="btn secondary" id="downloadBtn">Download plan</button>
+      </div>
+      <div class="btn-row-secondary">
+        <button class="btn secondary" id="pdfBtn">Export PDF</button>
+        <button class="btn secondary" id="shareBtn">Copy link</button>
+      </div>
+      <div class="list-out" id="listOut"></div>
+    </div>
+  `;
+
+  el.innerHTML = html;
+
+  el.querySelectorAll('.swatch').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.picks[btn.dataset.cat] = btn.dataset.prod;
+      renderPlanSvg();
+      renderPanel();
+    });
+  });
+
+  document.getElementById('genBtn').addEventListener('click', () => {
+    const out = document.getElementById('listOut');
+    out.classList.add('visible');
+    const placed = placedCategories();
+    if (placed.length === 0) {
+      out.innerHTML = `<div class="row"><span>Nothing placed in the room yet — drag an item in first.</span></div>`;
+      toast('Room is empty');
+      return;
     }
-    const records = inside.map(lot => ({ lot, footprints: footprintsByBBL[canonBBL(lot.bbl)] || [] }));
+    out.innerHTML = placed.map(c => {
+      const p = productById(c.id, state.picks[c.id]);
+      const bbox = bboxFor(c, state.rotations[c.id] || 0);
+      const dim = `${bbox.bw.toFixed(1)}' × ${bbox.bh.toFixed(1)}'`;
+      return `<div class="row"><span>${escapeHtml(c.label)} — ${escapeHtml(p.name)} <span class="dim">(${dim})</span></span><span class="n">$${p.price}</span></div>`;
+    }).join('') + `<div class="row" style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px;"><span><strong>Total</strong></span><span class="n"><strong>$${total()}</strong></span></div>`;
+    toast('Shopping list ready');
+  });
 
-    currentRecords = records;
-    currentBoroDigit = boroDigit;
-    buildBoroughMeshes(records);
-    updateLegend(); // same fix as selectBorough — Neighborhood mode's legend is data-dependent
-    toast(`${nta.ntaname}: ${records.length} lots rendered`);
-
-    // keep the borough tab row honest — it should reflect where the neighborhood actually is,
-    // not whatever borough was selected before this search
-    document.querySelectorAll('#boroughPicker button').forEach(b=>b.classList.toggle('active', Number(b.dataset.boro) === boroDigit));
-
-    frameCameraOnRings(rings);
-    activeNeighborhood = nta;
-    document.getElementById('neighborhoodSearch').value = nta.ntaname;
-    document.getElementById('neighborhoodClear').classList.remove('hidden');
-  }catch(err){
-    console.error(err);
-    toast(`Could not load ${nta.ntaname} — ${err.message}`);
-    document.getElementById('statusBar').textContent = `Load failed: ${err.message}`;
-  }finally{
-    document.getElementById('loadOverlay').classList.add('hidden');
-  }
-}
-function clearNeighborhoodFilter(){
-  activeNeighborhood = null;
-  document.getElementById('neighborhoodSearch').value = '';
-  document.getElementById('neighborhoodClear').classList.add('hidden');
-  document.getElementById('neighborhoodResults').classList.add('hidden');
-  selectBorough(currentBoroDigit);
+  document.getElementById('downloadBtn').addEventListener('click', downloadPlanImage);
+  document.getElementById('pdfBtn').addEventListener('click', downloadPlanPDF);
+  document.getElementById('shareBtn').addEventListener('click', copyShareLink);
 }
 
-document.getElementById('boroughPicker').addEventListener('click', (e)=>{
-  const btn = e.target.closest('button[data-boro]');
-  if(!btn) return;
-  document.querySelectorAll('#boroughPicker button').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  // picking a borough tab directly means "leave neighborhood mode", same as the explicit × button
-  activeNeighborhood = null;
-  document.getElementById('neighborhoodSearch').value = '';
-  document.getElementById('neighborhoodClear').classList.add('hidden');
-  selectBorough(Number(btn.dataset.boro));
-});
-document.getElementById('colorModePicker').addEventListener('click', async (e)=>{
-  const btn = e.target.closest('button[data-mode]');
-  if(!btn) return;
-  const mode = btn.dataset.mode;
-  document.querySelectorAll('#colorModePicker button').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  colorMode = mode;
-  hiddenCategories.clear();
-  if(mode === 'neighborhood' && !ntaGeomLoaded){
-    // this is a real ~5s/4.5MB fetch, not instant — show the loading overlay rather than let
-    // the UI sit on stale colors while it happens
-    document.getElementById('loadOverlay').classList.remove('hidden');
-    document.getElementById('loadMsg').textContent = 'Fetching neighborhood boundaries…';
-    try{ await loadAllNtaGeometries(); }
-    catch(err){ console.warn('Neighborhood boundaries failed to load — color mode will show Unmatched', err); }
-    document.getElementById('loadOverlay').classList.add('hidden');
-  }
-  buildBoroughMeshes(currentRecords);
-  updateLegend(); // always after buildBoroughMeshes, not mode-conditional — same
-                   // consistent pattern now used by selectBorough/selectNeighborhood; the other
-                   // three color modes' legends are static so refreshing them here costs
-                   // nothing, and Neighborhood mode's legend needs the nta2020 assignments
-                   // buildBoroughMeshes just computed, which weren't ready for the old
-                   // pre-build updateLegend() call this replaces
-});
-document.getElementById('envelopeToggle').addEventListener('click', (e)=>{
-  showEnvelope = !showEnvelope;
-  e.target.classList.toggle('active', showEnvelope);
-  e.target.textContent = showEnvelope ? 'Hide zoning envelope' : 'Show zoning envelope';
-  buildBoroughMeshes(currentRecords);
-});
-document.getElementById('streetsToggle').addEventListener('click', (e)=>{
-  // streetGroup is loaded once at boot and never rebuilt per-borough, so this is just a
-  // visibility flip — no fetch, no buildBoroughMeshes call needed
-  showStreets = !showStreets;
-  streetGroup.visible = showStreets;
-  e.target.classList.toggle('active', showStreets);
-  e.target.textContent = showStreets ? 'Hide major streets' : 'Show major streets';
-});
+/* ================= Plan export (shared canvas + PNG/PDF outputs) =================
+   buildPlanCanvas() does all the SVG->canvas rendering once; downloadPlanImage()
+   and downloadPlanPDF() just package that same canvas differently, so the two
+   export formats can never visually drift apart from each other. */
+function buildPlanCanvas(onReady, onError){
+  try {
+    const svg = document.getElementById('planSvg');
+    const clone = svg.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    clone.setAttribute('width', svgW);
+    clone.setAttribute('height', svgH);
 
-/* ---- neighborhood search box wiring ---- */
-const ntaSearchInput = document.getElementById('neighborhoodSearch');
-const ntaResultsEl = document.getElementById('neighborhoodResults');
-// Clicking/focusing an empty input needs to show something, not require a name to already be
-// typed: an empty query renders every neighborhood, grouped under its borough as a header,
-// instead of showing nothing until the person knows what to type.
-function renderNtaResults(query){
-  const q = query.trim().toLowerCase();
-  ntaResultsEl.innerHTML = '';
-  if(!q){
-    if(!ntaList.length){
-      const div = document.createElement('div');
-      div.className = 'noResults';
-      div.textContent = 'Neighborhood list still loading…';
-      ntaResultsEl.appendChild(div);
-    }else{
-      const byBoro = {};
-      for(const n of ntaList){ (byBoro[n.boroname] = byBoro[n.boroname] || []).push(n); }
-      for(const boro of Object.keys(BORONAME_TO_DIGIT)){ // fixed borough order, not fetch order
-        const list = byBoro[boro];
-        if(!list || !list.length) continue;
-        const header = document.createElement('div');
-        header.className = 'ntaGroupHeader';
-        header.textContent = boro;
-        ntaResultsEl.appendChild(header);
-        for(const n of list){
-          const btn = document.createElement('button');
-          btn.textContent = n.ntaname;
-          btn.onclick = () => { ntaResultsEl.classList.add('hidden'); selectNeighborhood(n); };
-          ntaResultsEl.appendChild(btn);
-        }
+    const planCanvas = getComputedStyle(document.documentElement).getPropertyValue('--plan-canvas').trim() || '#0E1220';
+    const planLine = getComputedStyle(document.documentElement).getPropertyValue('--plan-line').trim() || '#8F7EFF';
+    const planLineSoft = getComputedStyle(document.documentElement).getPropertyValue('--plan-line-soft').trim() || 'rgba(143,126,255,0.24)';
+
+    let svgStr = new XMLSerializer().serializeToString(clone);
+    svgStr = svgStr.split('var(--plan-line-soft)').join(planLineSoft);
+    svgStr = svgStr.split('var(--plan-line)').join(planLine);
+    svgStr = svgStr.split('var(--plan-canvas)').join(planCanvas);
+
+    const bgRect = `<rect x="0" y="0" width="${svgW}" height="${svgH}" fill="${planCanvas}"/>`;
+    svgStr = svgStr.replace(/(<svg[^>]*>)/, `$1${bgRect}`);
+
+    const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = function(){
+      const scaleUp = 2;
+      const rowH = 26;
+      const listTop = svgH + 34;
+      const placed = placedCategories();
+      const rowCount = Math.max(placed.length, 1); // reserve one row for the "nothing placed" message
+      const listH = rowCount * rowH + 74;
+      const canvasH = listTop + listH;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = svgW * scaleUp;
+      canvas.height = canvasH * scaleUp;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(scaleUp, scaleUp);
+
+      ctx.drawImage(img, 0, 0, svgW, svgH);
+
+      ctx.fillStyle = '#141829';
+      ctx.fillRect(0, svgH, svgW, listH);
+      ctx.fillStyle = 'rgba(143,126,255,0.2)';
+      ctx.fillRect(0, svgH, svgW, 1);
+
+      ctx.textBaseline = 'alphabetic';
+      let y = listTop;
+      if (placed.length === 0) {
+        ctx.fillStyle = '#8E8AA8';
+        ctx.font = 'italic 13px Inter, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('Nothing placed in the room yet.', 24, y);
+        y += rowH;
+      } else {
+        placed.forEach(cat => {
+          const p = productById(cat.id, state.picks[cat.id]);
+          const bbox = bboxFor(cat, state.rotations[cat.id] || 0);
+          const dim = `${bbox.bw.toFixed(1)}' × ${bbox.bh.toFixed(1)}'`;
+          ctx.fillStyle = 'rgba(143,126,255,0.6)';
+          ctx.fillRect(24, y - 11, 12, 12);
+          ctx.font = '13px Inter, sans-serif';
+          ctx.textAlign = 'left';
+          ctx.fillStyle = '#E7E4F4';
+          const mainText = `${cat.label} — ${p.name} `;
+          ctx.fillText(mainText, 46, y);
+          const mainWidth = ctx.measureText(mainText).width;
+          ctx.font = 'italic 12px Inter, sans-serif';
+          ctx.fillStyle = '#8E8AA8';
+          ctx.fillText(`(${dim})`, 46 + mainWidth, y);
+          ctx.font = '13px Inter, sans-serif';
+          ctx.fillStyle = '#8E8AA8';
+          ctx.textAlign = 'right';
+          ctx.fillText(`$${p.price}`, svgW - 24, y);
+          y += rowH;
+        });
       }
-    }
-  }else{
-    const matches = ntaList.filter(n => n.ntaname.toLowerCase().includes(q)).slice(0, 8);
-    if(!matches.length){
-      const div = document.createElement('div');
-      div.className = 'noResults';
-      div.textContent = ntaList.length ? 'No matching neighborhood' : 'Neighborhood list still loading…';
-      ntaResultsEl.appendChild(div);
-    }else{
-      for(const n of matches){
-        const btn = document.createElement('button');
-        btn.innerHTML = `${escapeHtml(n.ntaname)}<span class="ntaBoro">${escapeHtml(n.boroname)}</span>`;
-        btn.onclick = () => { ntaResultsEl.classList.add('hidden'); selectNeighborhood(n); };
-        ntaResultsEl.appendChild(btn);
-      }
-    }
+
+      y += 6;
+      ctx.fillStyle = 'rgba(143,126,255,0.25)';
+      ctx.fillRect(24, y - 16, svgW - 48, 1);
+      y += 22;
+      ctx.font = '600 16px Fraunces, serif';
+      ctx.fillStyle = '#E7E4F4';
+      ctx.textAlign = 'left';
+      ctx.fillText('Room total', 24, y);
+      ctx.fillStyle = '#7C5CFC';
+      ctx.textAlign = 'right';
+      ctx.fillText(`$${total()}`, svgW - 24, y);
+
+      URL.revokeObjectURL(url);
+      onReady(canvas);
+    };
+    img.onerror = function(){
+      console.error('Plan export failed to render.');
+      onError();
+    };
+    img.src = url;
+  } catch (e) {
+    console.error('Export failed', e);
+    onError();
   }
-  ntaResultsEl.classList.remove('hidden');
 }
-ntaSearchInput.addEventListener('input', (e) => renderNtaResults(e.target.value));
-// both focus AND click — focus alone misses the case where the box is already focused (e.g.
-// tabbed to it) and the person clicks again after an outside click closed the dropdown
-ntaSearchInput.addEventListener('focus', (e) => renderNtaResults(e.target.value));
-ntaSearchInput.addEventListener('click', (e) => renderNtaResults(e.target.value));
-document.addEventListener('click', (e) => {
-  if(!document.getElementById('neighborhoodWrap').contains(e.target)) ntaResultsEl.classList.add('hidden');
-});
-document.getElementById('neighborhoodClear').addEventListener('click', clearNeighborhoodFilter);
+
+function downloadPlanImage(){
+  buildPlanCanvas(function(canvas){
+    canvas.toBlob(function(blob){
+      if (!blob) { toast('Download failed — try again'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dorm-room-plan.png';
+      a.click();
+      toast('Plan saved as PNG');
+    });
+  }, function(){ toast('Download failed — try again'); });
+}
+
+// Same rendered canvas as the PNG export, just placed as a single full-bleed
+// image on a PDF page sized to match its exact proportions (no wasted margin,
+// no re-layout) — the fast option, not a re-typeset document.
+function downloadPlanPDF(){
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    toast('PDF export unavailable — check your connection and try again');
+    return;
+  }
+  buildPlanCanvas(function(canvas){
+    try {
+      const { jsPDF } = window.jspdf;
+      const pageW = canvas.width / 2;  // canvas is rendered at 2x scale; use CSS-pixel size for the page
+      const pageH = canvas.height / 2;
+      const pdf = new jsPDF({
+        orientation: pageW > pageH ? 'landscape' : 'portrait',
+        unit: 'pt',
+        format: [pageW, pageH]
+      });
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pageW, pageH);
+      pdf.save('dorm-room-plan.pdf');
+      toast('Plan saved as PDF');
+    } catch (e) {
+      console.error('PDF export failed', e);
+      toast('Download failed — try again');
+    }
+  }, function(){ toast('Download failed — try again'); });
+}
+
+/* ================= Shareable link =================
+   The entire configurable state (room plan, palette, per-category product
+   picks, positions, rotations) round-trips through a base64 blob in the URL
+   hash — no backend, no accounts, matches every other tool in this suite. */
+function shareStateObj(){
+  return { r: state.roomPlan, p: state.palette, k: state.picks, s: state.positions, o: state.rotations };
+}
+function buildShareUrl(){
+  const encoded = btoa(JSON.stringify(shareStateObj()));
+  const url = new URL(window.location.href);
+  url.hash = 's=' + encoded;
+  return url.toString();
+}
+function fallbackCopy(text){
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  toast(ok ? 'Link copied' : 'Could not copy — copy it from the address bar');
+}
+function copyShareLink(){
+  const url = buildShareUrl();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(
+      () => toast('Link copied'),
+      () => fallbackCopy(url)
+    );
+  } else {
+    fallbackCopy(url);
+  }
+}
+// Reads a `#s=<base64>` hash on load and restores that exact room. Every
+// field is validated against the real catalog/room data before it's applied,
+// and positions are re-clamped to the restored room's bounds — a malformed
+// or stale link degrades to "ignore that field," never a crash or an
+// out-of-bounds item.
+function restoreFromHash(){
+  if (!location.hash) return;
+  let obj;
+  try {
+    const params = new URLSearchParams(location.hash.slice(1));
+    const encoded = params.get('s');
+    if (!encoded) return;
+    obj = JSON.parse(atob(encoded));
+  } catch (e) {
+    toast('Could not read that share link');
+    return;
+  }
+  if (obj.r && roomPlans.find(p => p.id === obj.r)) {
+    state.roomPlan = obj.r;
+    applyRoomPlan(roomPlans.find(p => p.id === obj.r));
+  }
+  if (obj.p && palettes.find(p => p.id === obj.p)) state.palette = obj.p;
+  if (obj.k && typeof obj.k === 'object') {
+    categories.forEach(c => {
+      const pick = obj.k[c.id];
+      if (pick && productById(c.id, pick)) state.picks[c.id] = pick;
+    });
+  }
+  if (obj.o && typeof obj.o === 'object') {
+    categories.forEach(c => {
+      const rot = obj.o[c.id];
+      state.rotations[c.id] = [0, 90, 180, 270].includes(rot) ? rot : 0;
+    });
+  }
+  if (obj.s && typeof obj.s === 'object') {
+    categories.forEach(c => {
+      const pos = obj.s[c.id];
+      if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+        const bbox = bboxFor(c, state.rotations[c.id] || 0);
+        state.positions[c.id] = {
+          x: Math.max(0, Math.min(ROOM_W - bbox.bw, pos.x)),
+          y: Math.max(0, Math.min(ROOM_D - bbox.bh, pos.y))
+        };
+      }
+    });
+  }
+  toast('Loaded shared room');
+}
+
+/* ================= Home view ================= */
+function renderHome(){
+  main.innerHTML = `
+    <p class="intro">A scaled dorm room, built from real dimensions, priced as you configure it. Drag pieces from the tray into the room, then swap palettes or individual items.</p>
+    <p class="group-label">Room plan</p>
+    <div class="palette-tabs" id="roomTabs"></div>
+    <p class="group-label">Palette</p>
+    <div class="palette-tabs" id="paletteTabs"></div>
+    <div class="layout">
+      <div class="plan-card">
+        <div class="plan-head">
+          <span class="group-label" style="margin:0;">Floor plan</span>
+          <button class="btn ghost" id="resetBtn">Reset room</button>
+        </div>
+        <svg id="planSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="plan-caption" id="planCaption"></div>
+      </div>
+      <div class="panel" id="panel"></div>
+    </div>
+  `;
+  renderRoomTabs();
+  renderTabs();
+  renderPlanSvg();
+  renderPanel();
+  renderPlanCaption();
+  document.getElementById('resetBtn').addEventListener('click', resetRoom);
+  setupDrag();
+}
 
 /* ================= Theme ================= */
-function currentTheme(){ return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
+function currentTheme(){
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
 function applyThemeChrome(){
   const dark = currentTheme() === 'dark';
   document.getElementById('themeToggle').textContent = dark ? '☀️' : '🌙';
-  document.getElementById('themeColorMeta').setAttribute('content', dark ? '#14171B' : '#EDEAE0');
-  if(scene) applySkyBackground();
+  const paper = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim();
+  document.getElementById('themeColorMeta').setAttribute('content', paper || (dark ? '#0E1220' : '#F5F3FA'));
 }
 function toggleTheme(){
   const next = currentTheme() === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
+  if (next === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
   localStorage.setItem('theme', next);
   applyThemeChrome();
 }
 document.getElementById('themeToggle').addEventListener('click', toggleTheme);
-if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+if (localStorage.getItem('theme') === 'light') document.documentElement.setAttribute('data-theme', 'light');
+
+/* Minimum viewport — desktop/tablet only. The drag-and-drop floor plan
+   doesn't degrade gracefully to phone width. */
+const MIN_VIEWPORT_WIDTH = 760; // every common tablet (iPad Mini and up) clears this — phone-only in practice
+function checkViewportSize(){
+  const blocked = window.innerWidth < MIN_VIEWPORT_WIDTH;
+  document.getElementById('tooSmallBlock').style.display = blocked ? 'flex' : 'none';
+  return blocked;
+}
+window.addEventListener('resize', checkViewportSize);
 
 /* ================= Boot ================= */
-// Gates the whole app behind a screen-size check (see #smallScreenGate above). Uses
-// Math.min(innerWidth,innerHeight) rather than innerWidth alone — a landscape phone can be wider
-// than 768px while still being a phone; its SHORTER dimension is what actually matters for
-// whether the map+toolbar+side-panel layout fits. Skips initScene()/data fetches entirely on a
-// gated first load rather than booting the full 3D app just to hide it behind an overlay — no
-// point spending a phone's battery/data on a scene it can't show. If the viewport later grows
-// past the threshold (window resized, or a tablet/foldable unfolded) the app boots then, once,
-// on demand; if a desktop window later shrinks below it, the gate simply overlays the
-// already-running scene rather than tearing anything down, and un-hides it again if it grows
-// back — no re-init either way, since nothing was ever destroyed.
-const SMALL_SCREEN_THRESHOLD = 768;
-let appBooted = false;
-function evaluateScreenGate(){
-  const tooSmall = Math.min(window.innerWidth, window.innerHeight) < SMALL_SCREEN_THRESHOLD;
-  document.body.classList.toggle('gate-small', tooSmall);
-  if(!tooSmall && !appBooted){
-    appBooted = true;
-    bootApp();
-  }
-}
-function bootApp(){
-  applyThemeChrome();
-  document.getElementById('footVersion').innerHTML = `MASSING · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a>`;
-  initScene();
-  updateLegend();
-  loadBoroughOutlines();
-  loadMajorStreets();
-  loadNtaList();
-  selectBorough(1);
-}
 (function boot(){
-  window.addEventListener('resize', evaluateScreenGate);
-  evaluateScreenGate();
+  applyThemeChrome();
+  document.getElementById('footVersion').innerHTML = `Palette &amp; Plan · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a>`;
+  checkViewportSize(); // run on boot, not just on resize
+  restoreFromHash(); // apply a shared-link state, if the URL has one, before first render
+  render();
 })();
 </script>
 </body>
