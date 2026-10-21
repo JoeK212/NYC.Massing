@@ -5,56 +5,6 @@
   volume per tax lot, from its real recorded height and footprint, with its allowed zoning
   envelope (FAR-derived) rendered alongside it.
   Joe.K · axisbim.io
-
-  CHANGELOG
-  v1.7.10 - Reported the initial load was slow again. Traced it to real, observed network
-    behavior: Building Footprints' API was intermittently responding to individual page
-    requests in 15-17s (external, on NYC Open Data's side), and fetchFootprintsBorough() fetched
-    its pages one after another — four sequential slow pages compounded into over a minute of
-    total wait, on top of whatever the API's own latency was. Parallelized it the same way an
-    earlier version already fixed the PLUTO fetch: fire every page up to the known upper bound
-    (the existing MAX_LOTS_PER_BOROUGH*2 cap) at once with Promise.all, instead of a sequential
-    while loop. Applied the identical fix to fetchFootprintsForBBLs (the neighborhood-search
-    footprints fetch), which had the same sequential-chunk pattern and is on every neighborhood
-    search. Neither fetch's total request count changes — this only changes whether they run one
-    after another or all at once.
-  v1.7.9 - Fixed a freeze on first zoom-in: v1.7.8 moved full-detail building construction off
-    the initial load, but it still ran as one uninterrupted block the first time it was needed,
-    which could take upwards of 25-30s on a full borough and locked up the tab for that whole
-    stretch. Detail construction now runs in short time-boxed chunks that yield back to the
-    browser between batches, so buildings appear progressively with a visible progress readout
-    instead of the page appearing to hang.
-  v1.7.8 - Cut initial load time by ~60x: materials are now shared by color instead of allocated
-    per building, and full-detail (near/mid LOD) building geometry is built lazily the first time
-    the camera zooms in close enough to need it, instead of upfront for every lot on every load.
-  v1.7.7 - Added a small-screen gate; the map, toolbar, and side panels need a tablet or larger.
-  v1.7.6 - Fixed block-LOD buildings on grid-aligned blocks fusing into one mass with no visible
-    streets — the block box is now oriented to each building's real footprint angle instead of
-    axis-aligned to world coordinates.
-  v1.7.4 - Fixed the land/water ground texture rendering mirrored north-south.
-  v1.7.3 - Added a land/water color distinction to the ground plane, generated from real borough
-    coastline data.
-  v1.7.0-v1.7.2 - Fixed residual fog/haze and an orange color cast on the ground at normal zoom.
-  v1.6.9 - Parallelized data pagination for faster loads.
-  v1.6.5-v1.6.8 - Fixed the day/night sky gradients, a stylesheet-breaking typo, borough labels
-    sinking into the ground, and the navigation panel disappearing under certain layouts.
-  v1.6.0-v1.6.4 - Added a major-streets overlay and a Neighborhood color mode; general load-time
-    optimizations (parallel fetches, localStorage caching for citywide layers); documentation and
-    legend fixes.
-  v1.5.0-v1.5.3 - Fixed the neighborhood search box and some buildings not rendering at certain
-    zoom levels; confirmed bare-looking areas reflect real data gaps, not missing data.
-  v1.4.0-v1.4.8 - Camera/zoom/pan fixes, discrete FAR and Year-Built color buckets, full borough
-    name labels, and several passes on borough-outline rendering (jitter, faint lines, shearing).
-  v1.3.0 - Reorganized the control layout; added in-app help documentation.
-  v1.2.0-v1.2.5 - Added Plan View, recenter, and a north compass; fixed borough-outline geometry
-    shearing (added coastline ring decimation) and a ghosting/z-fighting artifact.
-  v1.1.0 - Added camera orbit/pan/zoom controls.
-  v1.0.1-v1.0.3 - Fixed a blank canvas on load, a renderer resize bug, and a persistent 403 caused
-    by treating MapPLUTO as the wrong Socrata resource type.
-  v1.0.0 - Initial build: borough-scoped fetch from NYC Open Data (MapPLUTO joined to Building
-    Footprints on BBL), real footprint extrusion to real recorded height, FAR-derived zoning
-    envelope overlay, three color modes (Land Use / FAR Utilization / Year Built), near/mid/far
-    camera-distance LOD, click-to-inspect, vacant/no-footprint lots rendered as flat markers.
 -->
 <html lang="en">
 <head>
